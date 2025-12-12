@@ -1,0 +1,7 @@
+project_id = "kyyaixzaaspmfkargtze"
+
+[functions.save-eyes]
+verify_jwt = false
+
+[functions.delete-eyes]
+verify_jwt = false
