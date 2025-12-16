@@ -1,15 +1,15 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
-import { ArrowLeft, X, Trash2 } from 'lucide-react';
+import { ArrowLeft, Trash2, Shield } from 'lucide-react';
 
 interface EyeRecord {
   cid: string;
   created_at: string;
 }
 
-const ADMIN_SECRET_KEY = 'gorgona_admin_secret'; // localStorage key
-const ITEMS_PER_PAGE = 20;
+const ADMIN_SECRET_KEY = 'gorgona_admin_secret';
+const ITEMS_PER_PAGE = 50;
 
 const Canvas = () => {
   const [searchParams] = useSearchParams();
@@ -20,6 +20,7 @@ const Canvas = () => {
   const [hasMore, setHasMore] = useState(true);
   const [page, setPage] = useState(0);
   const [deletingCid, setDeletingCid] = useState<string | null>(null);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
   
   const observerRef = useRef<IntersectionObserver | null>(null);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
@@ -71,11 +72,9 @@ const Canvas = () => {
     }
   }, []);
 
-  // Initial load
   useEffect(() => {
     loadEyes(0);
 
-    // Subscribe to realtime updates
     const channel = supabase
       .channel('eyes-realtime')
       .on(
@@ -88,7 +87,6 @@ const Canvas = () => {
         (payload) => {
           console.log('Realtime update:', payload);
           if (payload.eventType === 'INSERT') {
-            // Append to end (left-to-right, top-to-bottom flow)
             setEyes(prev => [...prev, payload.new as EyeRecord]);
           } else if (payload.eventType === 'DELETE') {
             setEyes(prev => prev.filter(e => e.cid !== (payload.old as EyeRecord).cid));
@@ -102,7 +100,6 @@ const Canvas = () => {
     };
   }, [loadEyes]);
 
-  // Infinite scroll observer
   useEffect(() => {
     if (observerRef.current) observerRef.current.disconnect();
 
@@ -166,9 +163,18 @@ const Canvas = () => {
     }
   };
 
+  const enableAdminMode = () => {
+    const secret = prompt('Введите admin secret:');
+    if (secret) {
+      localStorage.setItem(ADMIN_SECRET_KEY, secret);
+      setIsAdmin(true);
+      setShowAdminPanel(false);
+    }
+  };
+
   if (loading && eyes.length === 0) {
     return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="min-h-screen bg-black flex items-center justify-center font-mono">
         <p className="text-gray-500 text-lg">Загрузка глаз...</p>
       </div>
     );
@@ -176,45 +182,85 @@ const Canvas = () => {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="min-h-screen bg-black flex items-center justify-center font-mono">
         <p className="text-red-500 text-lg">Ошибка: {error}</p>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-black">
-      <Link
-        to="/"
-        className="fixed top-5 left-5 text-gray-500 hover:text-white text-2xl z-50"
-      >
-        <ArrowLeft size={24} />
-      </Link>
-
-      {isAdmin && (
-        <div className="fixed top-5 right-5 bg-red-900/80 text-white px-3 py-1 rounded text-sm z-50">
-          ADMIN MODE
+    <div className="min-h-screen bg-black font-mono">
+      {/* Header */}
+      <div className="fixed top-0 left-0 right-0 z-50 bg-black/80 backdrop-blur-sm">
+        <div className="flex items-center justify-between p-4">
+          <Link to="/" className="text-gray-500 hover:text-white">
+            <ArrowLeft size={24} />
+          </Link>
+          
+          <div className="flex items-center gap-4">
+            {isAdmin && (
+              <div className="bg-red-600 text-white px-3 py-1 text-xs font-bold uppercase">
+                ADMIN
+              </div>
+            )}
+            <button
+              onClick={() => setShowAdminPanel(!showAdminPanel)}
+              className="text-gray-500 hover:text-white p-2"
+              title="Admin panel"
+            >
+              <Shield size={20} />
+            </button>
+          </div>
         </div>
-      )}
+        
+        {/* Admin panel */}
+        {showAdminPanel && (
+          <div className="bg-black/95 border-t border-white/10 p-4">
+            {isAdmin ? (
+              <div className="text-center">
+                <p className="text-green-500 text-sm mb-2">Режим администратора активен</p>
+                <p className="text-gray-500 text-xs">Наведите на видео для удаления</p>
+                <button
+                  onClick={() => {
+                    localStorage.removeItem(ADMIN_SECRET_KEY);
+                    setIsAdmin(false);
+                    setShowAdminPanel(false);
+                  }}
+                  className="mt-3 text-red-500 text-sm underline hover:no-underline"
+                >
+                  Выйти из режима админа
+                </button>
+              </div>
+            ) : (
+              <div className="text-center">
+                <p className="text-gray-500 text-sm mb-3">Войти как администратор</p>
+                <button
+                  onClick={enableAdminMode}
+                  className="border border-white text-white px-6 py-2 text-sm hover:bg-white hover:text-black transition-all"
+                >
+                  Ввести секрет
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {eyes.length === 0 ? (
-        <div className="min-h-screen flex items-center justify-center">
+        <div className="min-h-screen flex items-center justify-center pt-16">
           <p className="text-gray-500 text-lg">Пока нет глаз</p>
         </div>
       ) : (
-        <>
-          {/* Dense grid layout: left-to-right, top-to-bottom */}
+        <div className="pt-16">
+          {/* Full-width dense grid */}
           <div 
-            className="grid w-full"
-            style={{
-              gridTemplateColumns: 'repeat(auto-fill, 512px)',
-              justifyContent: 'center',
-            }}
+            className="flex flex-wrap w-full"
+            style={{ margin: 0, padding: 0 }}
           >
             {eyes.map((eye) => (
               <div
                 key={eye.cid}
-                className="relative group"
+                className="relative group flex-shrink-0"
                 style={{ width: 512, height: 128 }}
               >
                 <video
@@ -226,15 +272,15 @@ const Canvas = () => {
                   className="w-full h-full object-cover block"
                 />
                 
-                {/* Admin delete button */}
+                {/* Admin delete button - always visible for admin */}
                 {isAdmin && (
                   <button
                     onClick={() => handleAdminDelete(eye.cid)}
                     disabled={deletingCid === eye.cid}
-                    className="absolute top-2 right-2 bg-red-600/80 hover:bg-red-500 text-white p-2 rounded opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-50"
+                    className="absolute top-2 right-2 bg-red-600/90 hover:bg-red-500 text-white p-2 opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-50"
                   >
                     {deletingCid === eye.cid ? (
-                      <span className="text-xs">...</span>
+                      <span className="text-xs px-1">...</span>
                     ) : (
                       <Trash2 size={16} />
                     )}
@@ -253,7 +299,7 @@ const Canvas = () => {
               <p className="text-gray-600 text-sm">Загрузка...</p>
             </div>
           )}
-        </>
+        </div>
       )}
     </div>
   );
