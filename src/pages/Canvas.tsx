@@ -9,7 +9,7 @@ interface EyeRecord {
 }
 
 const ADMIN_SECRET_KEY = 'gorgona_admin_secret';
-const ITEMS_PER_PAGE = 50;
+const ITEMS_PER_PAGE = 100;
 
 const Canvas = () => {
   const [searchParams] = useSearchParams();
@@ -27,7 +27,6 @@ const Canvas = () => {
 
   const storageUrl = `${import.meta.env.VITE_SUPABASE_URL}/storage/v1/object/public/eyes/`;
 
-  // Check admin mode
   useEffect(() => {
     const adminParam = searchParams.get('admin');
     const storedSecret = localStorage.getItem(ADMIN_SECRET_KEY);
@@ -85,7 +84,6 @@ const Canvas = () => {
           table: 'eyes'
         },
         (payload) => {
-          console.log('Realtime update:', payload);
           if (payload.eventType === 'INSERT') {
             setEyes(prev => [...prev, payload.new as EyeRecord]);
           } else if (payload.eventType === 'DELETE') {
@@ -141,9 +139,7 @@ const Canvas = () => {
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/delete-eyes`,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ cid, adminSecret })
         }
       );
@@ -153,10 +149,9 @@ const Canvas = () => {
       if (result.success) {
         setEyes(prev => prev.filter(e => e.cid !== cid));
       } else {
-        alert('Ошибка удаления: ' + (result.error || 'Unknown error'));
+        alert('Ошибка: ' + (result.error || 'Unknown error'));
       }
     } catch (err: any) {
-      console.error('Delete error:', err);
       alert('Ошибка сети');
     } finally {
       setDeletingCid(null);
@@ -175,7 +170,7 @@ const Canvas = () => {
   if (loading && eyes.length === 0) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center font-mono">
-        <p className="text-gray-500 text-lg">Загрузка глаз...</p>
+        <p className="text-white/30 text-sm tracking-widest">ЗАГРУЗКА...</p>
       </div>
     );
   }
@@ -183,62 +178,58 @@ const Canvas = () => {
   if (error) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center font-mono">
-        <p className="text-red-500 text-lg">Ошибка: {error}</p>
+        <p className="text-red-500/60 text-sm">Ошибка: {error}</p>
       </div>
     );
   }
 
   return (
     <div className="min-h-screen bg-black font-mono">
-      {/* Header */}
-      <div className="fixed top-0 left-0 right-0 z-50 bg-black/80 backdrop-blur-sm">
-        <div className="flex items-center justify-between p-4">
-          <Link to="/" className="text-gray-500 hover:text-white">
+      {/* Fixed header */}
+      <div className="fixed top-0 left-0 right-0 z-50 bg-gradient-to-b from-black via-black/80 to-transparent">
+        <div className="flex items-center justify-between p-4 md:p-6">
+          <Link to="/" className="text-white/40 hover:text-white transition-colors">
             <ArrowLeft size={24} />
           </Link>
           
           <div className="flex items-center gap-4">
             {isAdmin && (
-              <div className="bg-red-600 text-white px-3 py-1 text-xs font-bold uppercase">
+              <span className="text-red-500 text-xs font-bold tracking-widest">
                 ADMIN
-              </div>
+              </span>
             )}
             <button
               onClick={() => setShowAdminPanel(!showAdminPanel)}
-              className="text-gray-500 hover:text-white p-2"
-              title="Admin panel"
+              className="text-white/20 hover:text-white/60 transition-colors"
             >
-              <Shield size={20} />
+              <Shield size={18} />
             </button>
           </div>
         </div>
         
-        {/* Admin panel */}
         {showAdminPanel && (
-          <div className="bg-black/95 border-t border-white/10 p-4">
+          <div className="bg-black/95 border-b border-white/10 p-4">
             {isAdmin ? (
               <div className="text-center">
-                <p className="text-green-500 text-sm mb-2">Режим администратора активен</p>
-                <p className="text-gray-500 text-xs">Наведите на видео для удаления</p>
+                <p className="text-white/40 text-xs mb-3">Режим администратора активен</p>
                 <button
                   onClick={() => {
                     localStorage.removeItem(ADMIN_SECRET_KEY);
                     setIsAdmin(false);
                     setShowAdminPanel(false);
                   }}
-                  className="mt-3 text-red-500 text-sm underline hover:no-underline"
+                  className="text-red-500/60 text-xs hover:text-red-500 transition-colors"
                 >
-                  Выйти из режима админа
+                  Выйти
                 </button>
               </div>
             ) : (
               <div className="text-center">
-                <p className="text-gray-500 text-sm mb-3">Войти как администратор</p>
                 <button
                   onClick={enableAdminMode}
-                  className="border border-white text-white px-6 py-2 text-sm hover:bg-white hover:text-black transition-all"
+                  className="px-6 py-2 border border-white/20 text-white/40 text-xs hover:bg-white/5 transition-colors"
                 >
-                  Ввести секрет
+                  Войти как администратор
                 </button>
               </div>
             )}
@@ -247,16 +238,13 @@ const Canvas = () => {
       </div>
 
       {eyes.length === 0 ? (
-        <div className="min-h-screen flex items-center justify-center pt-16">
-          <p className="text-gray-500 text-lg">Пока нет глаз</p>
+        <div className="min-h-screen flex items-center justify-center">
+          <p className="text-white/20 text-sm tracking-widest">НЕТ ЗАПИСЕЙ</p>
         </div>
       ) : (
-        <div className="pt-16">
-          {/* Full-width dense grid */}
-          <div 
-            className="flex flex-wrap w-full"
-            style={{ margin: 0, padding: 0 }}
-          >
+        <>
+          {/* Full-width dense mosaic grid */}
+          <div className="flex flex-wrap w-full">
             {eyes.map((eye) => (
               <div
                 key={eye.cid}
@@ -272,17 +260,20 @@ const Canvas = () => {
                   className="w-full h-full object-cover block"
                 />
                 
-                {/* Admin delete button - always visible for admin */}
+                {/* Hover overlay */}
+                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors" />
+                
+                {/* Admin delete button */}
                 {isAdmin && (
                   <button
                     onClick={() => handleAdminDelete(eye.cid)}
                     disabled={deletingCid === eye.cid}
-                    className="absolute top-2 right-2 bg-red-600/90 hover:bg-red-500 text-white p-2 opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-50"
+                    className="absolute top-2 right-2 bg-black/80 hover:bg-red-600 text-white/60 hover:text-white p-2 opacity-0 group-hover:opacity-100 transition-all disabled:opacity-50"
                   >
                     {deletingCid === eye.cid ? (
-                      <span className="text-xs px-1">...</span>
+                      <span className="text-xs">...</span>
                     ) : (
-                      <Trash2 size={16} />
+                      <Trash2 size={14} />
                     )}
                   </button>
                 )}
@@ -292,14 +283,11 @@ const Canvas = () => {
 
           {/* Load more trigger */}
           {hasMore && (
-            <div
-              ref={loadMoreRef}
-              className="h-20 flex items-center justify-center"
-            >
-              <p className="text-gray-600 text-sm">Загрузка...</p>
+            <div ref={loadMoreRef} className="h-32 flex items-center justify-center">
+              <p className="text-white/20 text-xs tracking-widest">ЗАГРУЗКА...</p>
             </div>
           )}
-        </div>
+        </>
       )}
     </div>
   );
