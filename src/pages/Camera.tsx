@@ -5,7 +5,6 @@ import { ArrowLeft, Plus, Minus } from 'lucide-react';
 
 type RecordingState = 'idle' | 'countdown' | 'recording' | 'preview';
 
-// Configuration
 const CONFIG = {
   FRAME_WIDTH: 512,
   FRAME_HEIGHT: 128,
@@ -31,8 +30,8 @@ const Camera = () => {
   const animationRef = useRef<number>(0);
   const stableFramesRef = useRef(0);
   const previousFrameRef = useRef<ImageData | null>(null);
-  const recordingStartRef = useRef<number>(0);
   const abortedRef = useRef(false);
+  const frameCheckRef = useRef<number>(0);
 
   const [state, setState] = useState<RecordingState>('idle');
   const [countdown, setCountdown] = useState(CONFIG.PRE_RECORD_SECONDS);
@@ -44,11 +43,11 @@ const Camera = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [supportsHardwareZoom, setSupportsHardwareZoom] = useState(false);
+  const [eyesInFrame, setEyesInFrame] = useState(false);
 
   const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const recordIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Initialize camera
   useEffect(() => {
     const initCamera = async () => {
       try {
@@ -69,7 +68,6 @@ const Camera = () => {
           await videoRef.current.play();
         }
         setStatusText('Поднеси глаза к рамке и держи взгляд');
-
         startMotionDetection();
       } catch (err) {
         console.error('Camera error:', err);
@@ -83,21 +81,64 @@ const Camera = () => {
       if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => track.stop());
       }
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
-      }
+      if (animationRef.current) cancelAnimationFrame(animationRef.current);
+      if (frameCheckRef.current) cancelAnimationFrame(frameCheckRef.current);
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
       if (recordIntervalRef.current) clearInterval(recordIntervalRef.current);
     };
   }, []);
 
-  // Apply hardware zoom
   useEffect(() => {
     if (supportsHardwareZoom && streamRef.current) {
       const track = streamRef.current.getVideoTracks()[0];
       // @ts-expect-error - zoom is valid but not in TS types
       track.applyConstraints({ advanced: [{ zoom }] }).catch(() => {});
     }
+  }, [zoom, supportsHardwareZoom]);
+
+  const checkEyesInFrame = useCallback(() => {
+    if (!videoRef.current?.videoWidth) return false;
+    
+    // Simple check: analyze center region brightness variance
+    const tempCanvas = document.createElement('canvas');
+    const ctx = tempCanvas.getContext('2d')!;
+    tempCanvas.width = 100;
+    tempCanvas.height = 30;
+    
+    // Calculate frame region in video coordinates
+    const videoW = videoRef.current.videoWidth;
+    const videoH = videoRef.current.videoHeight;
+    const effectiveZoom = supportsHardwareZoom ? 1 : zoom;
+    const scaledW = videoW / effectiveZoom;
+    const scaledH = videoH / effectiveZoom;
+    const sx = (videoW - scaledW) / 2;
+    const sy = (videoH - scaledH) / 2;
+    
+    // Sample from center of frame area
+    const sampleW = scaledW * 0.6;
+    const sampleH = scaledH * 0.3;
+    const sampleX = sx + (scaledW - sampleW) / 2;
+    const sampleY = sy + (scaledH - sampleH) / 2;
+    
+    ctx.drawImage(videoRef.current, sampleX, sampleY, sampleW, sampleH, 0, 0, 100, 30);
+    const imageData = ctx.getImageData(0, 0, 100, 30);
+    
+    // Check for variance (eyes have contrast between iris/sclera)
+    let sum = 0;
+    let sumSq = 0;
+    const pixels = imageData.data.length / 4;
+    
+    for (let i = 0; i < imageData.data.length; i += 4) {
+      const gray = (imageData.data[i] + imageData.data[i+1] + imageData.data[i+2]) / 3;
+      sum += gray;
+      sumSq += gray * gray;
+    }
+    
+    const mean = sum / pixels;
+    const variance = (sumSq / pixels) - (mean * mean);
+    
+    // Eyes typically have variance > 400 (contrast between iris/pupil/sclera/skin)
+    return variance > 300;
   }, [zoom, supportsHardwareZoom]);
 
   const startMotionDetection = () => {
@@ -114,6 +155,8 @@ const Camera = () => {
 
       ctx.drawImage(videoRef.current, 0, 0, 160, 120);
       const currentFrame = ctx.getImageData(0, 0, 160, 120);
+      const eyesDetected = checkEyesInFrame();
+      setEyesInFrame(eyesDetected);
 
       if (previousFrameRef.current) {
         let diff = 0;
@@ -122,9 +165,8 @@ const Camera = () => {
         }
         diff /= (currentFrame.data.length / 4);
 
-        // Check for stability in idle/countdown states
         if (state === 'idle') {
-          if (diff < CONFIG.MOTION_THRESHOLD) {
+          if (diff < CONFIG.MOTION_THRESHOLD && eyesDetected) {
             stableFramesRef.current++;
             if (stableFramesRef.current >= CONFIG.STABLE_FRAMES_REQUIRED) {
               if (!canRecord) {
@@ -134,21 +176,31 @@ const Camera = () => {
             }
           } else {
             stableFramesRef.current = 0;
-            if (canRecord && diff > CONFIG.HEAD_JERK_THRESHOLD) {
+            if (canRecord) {
               setCanRecord(false);
-              setStatusText('Держите голову неподвижно');
+              if (!eyesDetected) {
+                setStatusText('Поднеси глаза к рамке');
+              } else if (diff > CONFIG.HEAD_JERK_THRESHOLD) {
+                setStatusText('Держите голову неподвижно');
+              }
             }
           }
         }
 
-        // During countdown - check for jerks
-        if (state === 'countdown' && diff > CONFIG.HEAD_JERK_THRESHOLD) {
-          abortCountdown('Слишком резкое движение — повторите');
+        if (state === 'countdown') {
+          if (!eyesDetected) {
+            abortCountdown('Глаза вышли из рамки — повторите');
+          } else if (diff > CONFIG.HEAD_JERK_THRESHOLD) {
+            abortCountdown('Слишком резкое движение — повторите');
+          }
         }
 
-        // During recording - check for jerks
-        if (state === 'recording' && diff > CONFIG.HEAD_JERK_THRESHOLD) {
-          abortRecording('Слишком резкое движение — запись прервана');
+        if (state === 'recording') {
+          if (!eyesDetected) {
+            abortRecording('Глаза вышли из рамки — запись прервана');
+          } else if (diff > CONFIG.HEAD_JERK_THRESHOLD) {
+            abortRecording('Слишком резкое движение — запись прервана');
+          }
         }
       }
 
@@ -209,10 +261,9 @@ const Camera = () => {
   const startRecording = useCallback(() => {
     setState('recording');
     setRecordTime(CONFIG.RECORD_SECONDS);
-    setStatusText('Идёт запись...');
+    setStatusText('ИДЁТ ЗАПИСЬ');
     chunksRef.current = [];
     abortedRef.current = false;
-    recordingStartRef.current = Date.now();
 
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext('2d')!;
@@ -270,7 +321,6 @@ const Camera = () => {
     recorder.onstop = () => {
       isActive = false;
       
-      // Only process if not aborted
       if (!abortedRef.current && chunksRef.current.length > 0) {
         const blob = new Blob(chunksRef.current, { type: mimeType });
         setRecordedBlob(blob);
@@ -359,19 +409,29 @@ const Camera = () => {
   };
 
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col items-center relative">
-      <Link to="/" className="absolute top-5 left-5 text-gray-500 hover:text-white text-2xl z-50">
+    <div className="min-h-screen bg-black text-white flex flex-col items-center relative font-mono">
+      <Link to="/" className="absolute top-5 left-5 text-gray-500 hover:text-white z-50">
         <ArrowLeft size={24} />
       </Link>
 
-      <h1 className="text-[32px] text-center mt-16 mb-10 px-5 font-light">
+      <h1 className="text-xl md:text-2xl text-center mt-16 mb-8 px-5 font-medium">
         {state === 'preview' ? 'Запись завершена' : 'Поднеси глаза к рамке и держи взгляд'}
       </h1>
+
+      {/* Recording indicator */}
+      {state === 'recording' && (
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />
+          <span className="text-red-500 text-lg font-bold uppercase tracking-wider">
+            ИДЁТ ЗАПИСЬ
+          </span>
+        </div>
+      )}
 
       {/* Video frame */}
       <div 
         className={`relative border-2 rounded-xl overflow-hidden bg-black transition-colors ${
-          canRecord ? 'border-green-500/50' : 'border-white'
+          state === 'recording' ? 'border-red-500' : eyesInFrame && canRecord ? 'border-green-500/50' : 'border-white'
         }`}
         style={{ width: CONFIG.FRAME_WIDTH, height: CONFIG.FRAME_HEIGHT }}
       >
@@ -393,13 +453,10 @@ const Camera = () => {
           className={`w-full h-full object-cover ${state !== 'preview' ? 'hidden' : ''}`}
         />
 
-        {/* Eye guides */}
         {state !== 'preview' && (
           <div className="absolute inset-0 pointer-events-none z-10">
-            {/* Center crosshairs */}
             <div className="absolute top-1/2 left-0 right-0 h-px bg-white/20" />
             <div className="absolute left-1/2 top-0 bottom-0 w-px bg-white/20" />
-            {/* Eye outlines */}
             <div className="absolute top-1/2 -translate-y-1/2 left-[43px] w-[170px] h-[76px] border-2 border-dashed border-white/40 rounded-full" />
             <div className="absolute top-1/2 -translate-y-1/2 right-[43px] w-[170px] h-[76px] border-2 border-dashed border-white/40 rounded-full" />
           </div>
@@ -408,7 +465,9 @@ const Camera = () => {
 
       {/* Timer */}
       {(state === 'countdown' || state === 'recording') && (
-        <div className="text-[120px] font-light mt-10 tabular-nums tracking-tighter leading-none">
+        <div className={`text-[100px] font-bold mt-8 tabular-nums tracking-tighter leading-none ${
+          state === 'recording' ? 'text-red-500' : 'text-white'
+        }`}>
           {state === 'countdown' ? countdown : recordTime}
         </div>
       )}
@@ -418,7 +477,7 @@ const Camera = () => {
         <div className="flex items-center gap-4 mt-6">
           <button
             onClick={() => adjustZoom(-CONFIG.ZOOM_STEP)}
-            className="w-10 h-10 rounded-full border border-white/30 flex items-center justify-center hover:bg-white/10 transition-colors"
+            className="w-10 h-10 border border-white/30 flex items-center justify-center hover:bg-white/10 transition-colors"
           >
             <Minus size={18} />
           </button>
@@ -427,7 +486,7 @@ const Camera = () => {
           </span>
           <button
             onClick={() => adjustZoom(CONFIG.ZOOM_STEP)}
-            className="w-10 h-10 rounded-full border border-white/30 flex items-center justify-center hover:bg-white/10 transition-colors"
+            className="w-10 h-10 border border-white/30 flex items-center justify-center hover:bg-white/10 transition-colors"
           >
             <Plus size={18} />
           </button>
@@ -435,7 +494,9 @@ const Camera = () => {
       )}
 
       {/* Status */}
-      <div className="text-gray-500 text-base mt-5 text-center px-4 max-w-md">
+      <div className={`text-base mt-5 text-center px-4 max-w-md ${
+        state === 'recording' ? 'text-red-400' : 'text-gray-500'
+      }`}>
         {statusText}
       </div>
 
@@ -445,7 +506,7 @@ const Camera = () => {
           <button
             onClick={startCountdown}
             disabled={!canRecord}
-            className={`bg-transparent border-2 px-14 py-5 text-lg font-medium rounded-lg uppercase tracking-wide transition-all ${
+            className={`border-2 px-14 py-5 text-lg font-bold uppercase tracking-wide transition-all ${
               canRecord
                 ? 'text-white border-white hover:bg-white hover:text-black cursor-pointer'
                 : 'text-gray-600 border-gray-600 cursor-not-allowed'
@@ -461,20 +522,20 @@ const Camera = () => {
         <div className="flex flex-col items-center gap-4 mt-10">
           <button
             onClick={resetRecording}
-            className="bg-transparent text-white border-2 border-white px-10 py-4 text-base font-medium rounded-lg uppercase tracking-wide min-w-[280px] hover:bg-white hover:text-black transition-all"
+            className="border-2 border-white text-white px-10 py-4 text-base font-bold uppercase tracking-wide min-w-[280px] hover:bg-white hover:text-black transition-all"
           >
             ЗАПИСАТЬ ЗАНОВО
           </button>
           <button
             onClick={saveForever}
             disabled={isSaving || !!deleteUrl}
-            className="bg-white text-black border-2 border-white px-10 py-4 text-base font-medium rounded-lg uppercase tracking-wide min-w-[280px] hover:bg-gray-200 transition-all disabled:opacity-50"
+            className="bg-primary text-primary-foreground border-2 border-primary px-10 py-4 text-base font-bold uppercase tracking-wide min-w-[280px] hover:opacity-80 transition-all disabled:opacity-50"
           >
             {isSaving ? 'СОХРАНЕНИЕ...' : deleteUrl ? 'СОХРАНЕНО' : 'ОСТАВИТЬ НАВСЕГДА'}
           </button>
           <button
             onClick={downloadVideo}
-            className="bg-transparent text-white border-2 border-white px-10 py-4 text-base font-medium rounded-lg uppercase tracking-wide min-w-[280px] hover:bg-white hover:text-black transition-all"
+            className="border-2 border-white text-white px-10 py-4 text-base font-bold uppercase tracking-wide min-w-[280px] hover:bg-white hover:text-black transition-all"
           >
             СКАЧАТЬ НА КОМПЬЮТЕР
           </button>
@@ -485,13 +546,12 @@ const Camera = () => {
       {deleteUrl && (
         <div className="mt-5 text-center max-w-md px-4">
           <p className="text-gray-500 text-sm mb-2">Ссылка для удаления (одноразовая):</p>
-          <a href={deleteUrl} className="text-white text-sm break-all hover:underline">
+          <a href={deleteUrl} className="text-primary text-sm break-all hover:underline">
             {deleteUrl}
           </a>
         </div>
       )}
 
-      {/* Hidden canvas for recording */}
       <canvas ref={canvasRef} className="hidden" />
     </div>
   );
