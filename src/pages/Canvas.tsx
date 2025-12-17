@@ -10,6 +10,8 @@ interface EyeRecord {
 
 const ADMIN_SECRET_KEY = 'gorgona_admin_secret';
 const ITEMS_PER_PAGE = 100;
+const VIDEO_WIDTH = 512;
+const VIDEO_HEIGHT = 128;
 
 const Canvas = () => {
   const [searchParams] = useSearchParams();
@@ -21,11 +23,79 @@ const Canvas = () => {
   const [page, setPage] = useState(0);
   const [deletingCid, setDeletingCid] = useState<string | null>(null);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [itemScale, setItemScale] = useState(1);
+  const [itemsPerRow, setItemsPerRow] = useState(1);
   
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
 
   const storageUrl = `${import.meta.env.VITE_SUPABASE_URL}/storage/v1/object/public/eyes/`;
+
+  // Calculate optimal scale and items per row
+  const calculateLayout = useCallback(() => {
+    if (!containerRef.current) return;
+    
+    const viewportWidth = window.innerWidth;
+    const totalItems = eyes.length;
+    
+    if (totalItems === 0) {
+      setItemScale(1);
+      setItemsPerRow(1);
+      return;
+    }
+
+    // Calculate how many items can fit per row at scale 1
+    const baseItemsPerRow = Math.floor(viewportWidth / VIDEO_WIDTH);
+    
+    if (baseItemsPerRow < 1) {
+      // Viewport smaller than single item - scale down to fit
+      const scale = viewportWidth / VIDEO_WIDTH;
+      setItemScale(scale);
+      setItemsPerRow(1);
+      return;
+    }
+
+    // Calculate total rows needed at scale 1
+    const rowsAtScale1 = Math.ceil(totalItems / baseItemsPerRow);
+    
+    // Check if we have enough content to fill width
+    // If total items < items that would fill one row, allow gaps
+    if (totalItems < baseItemsPerRow) {
+      // Not enough items - use scale 1, center is allowed
+      setItemScale(1);
+      setItemsPerRow(totalItems);
+      return;
+    }
+
+    // We have enough items - calculate scale to eliminate horizontal gaps
+    // Find the scale that makes items fill the viewport width exactly
+    const perfectItemsPerRow = baseItemsPerRow;
+    const scaledWidth = VIDEO_WIDTH * perfectItemsPerRow;
+    
+    if (scaledWidth < viewportWidth) {
+      // Scale up items to fill width completely
+      const scale = viewportWidth / scaledWidth;
+      setItemScale(scale);
+      setItemsPerRow(perfectItemsPerRow);
+    } else {
+      // Items already fill or exceed width
+      setItemScale(1);
+      setItemsPerRow(baseItemsPerRow);
+    }
+  }, [eyes.length]);
+
+  // Recalculate on resize and content change
+  useEffect(() => {
+    calculateLayout();
+    
+    const handleResize = () => {
+      calculateLayout();
+    };
+    
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [calculateLayout]);
 
   useEffect(() => {
     const adminParam = searchParams.get('admin');
@@ -167,6 +237,10 @@ const Canvas = () => {
     }
   };
 
+  // Calculate scaled dimensions
+  const scaledWidth = Math.round(VIDEO_WIDTH * itemScale);
+  const scaledHeight = Math.round(VIDEO_HEIGHT * itemScale);
+
   if (loading && eyes.length === 0) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center font-mono">
@@ -184,10 +258,10 @@ const Canvas = () => {
   }
 
   return (
-    <div className="min-h-screen bg-black font-mono">
+    <div className="min-h-screen bg-black font-mono overflow-x-auto">
       {/* Fixed header */}
-      <div className="fixed top-0 left-0 right-0 z-50 bg-gradient-to-b from-black via-black/80 to-transparent">
-        <div className="flex items-center justify-between p-4 md:p-6">
+      <div className="fixed top-0 left-0 right-0 z-50 bg-gradient-to-b from-black via-black/80 to-transparent pointer-events-none">
+        <div className="flex items-center justify-between p-4 md:p-6 pointer-events-auto">
           <Link to="/" className="text-white/40 hover:text-white transition-colors">
             <ArrowLeft size={24} />
           </Link>
@@ -208,7 +282,7 @@ const Canvas = () => {
         </div>
         
         {showAdminPanel && (
-          <div className="bg-black/95 border-b border-white/10 p-4">
+          <div className="bg-black/95 border-b border-white/10 p-4 pointer-events-auto">
             {isAdmin ? (
               <div className="text-center">
                 <p className="text-white/40 text-xs mb-3">Режим администратора активен</p>
@@ -243,13 +317,23 @@ const Canvas = () => {
         </div>
       ) : (
         <>
-          {/* Full-width dense mosaic grid */}
-          <div className="flex flex-wrap w-full">
+          {/* Full-width dense grid - no centering, no padding */}
+          <div 
+            ref={containerRef}
+            className="flex flex-wrap items-start content-start"
+            style={{ 
+              minWidth: '100vw',
+              paddingTop: 80, // Space for header
+            }}
+          >
             {eyes.map((eye) => (
               <div
                 key={eye.cid}
                 className="relative group flex-shrink-0"
-                style={{ width: 512, height: 128 }}
+                style={{ 
+                  width: scaledWidth, 
+                  height: scaledHeight,
+                }}
               >
                 <video
                   src={`${storageUrl}${eye.cid}`}
