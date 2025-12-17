@@ -5,7 +5,7 @@ import { ArrowLeft, Plus, Minus } from 'lucide-react';
 import { FaceMesh, Results } from '@mediapipe/face_mesh';
 import { Camera as MediaPipeCamera } from '@mediapipe/camera_utils';
 
-type RecordingState = 'idle' | 'countdown' | 'recording' | 'preview';
+type RecordingState = 'idle' | 'countdown' | 'recording' | 'paused' | 'preview';
 
 const CONFIG = {
   FRAME_WIDTH: 512,
@@ -18,24 +18,52 @@ const CONFIG = {
   ZOOM_MAX: 3,
   ZOOM_STEP: 0.1,
   STABLE_FRAMES_REQUIRED: 20,
-  HEAD_JERK_THRESHOLD: 0.03, // Normalized distance
-  MIN_EYE_WIDTH: 0.08, // Minimum eye width relative to frame (not too far)
-  MAX_EYE_WIDTH: 0.35, // Maximum eye width relative to frame (not too close)
-  FRAME_MARGIN: 0.05, // Margin from frame edges
+  HEAD_JERK_THRESHOLD: 0.03,
+  MIN_EYE_WIDTH: 0.08,
+  MAX_EYE_WIDTH: 0.35,
+  FRAME_MARGIN: 0.05,
+  // Gaze thresholds
+  GAZE_THRESHOLD_X: 0.15, // 15% of eye width
+  GAZE_THRESHOLD_Y: 0.15, // 15% of eye height
+  GAZE_WINDOW_SIZE: 5, // sliding window frames
+  GAZE_MIN_VALID: 4, // minimum valid frames in window
 };
 
-// FaceMesh landmark indices for eyes
+// FaceMesh landmark indices
 const LEFT_EYE_INDICES = [33, 133, 160, 159, 158, 157, 173, 246, 161, 163];
 const RIGHT_EYE_INDICES = [362, 263, 387, 386, 385, 384, 398, 466, 388, 390];
-const LEFT_EYE_CENTER = [468]; // Left iris center
-const RIGHT_EYE_CENTER = [473]; // Right iris center
+// Iris landmarks (refineLandmarks must be true)
+const LEFT_IRIS_CENTER = 468;
+const RIGHT_IRIS_CENTER = 473;
+// Eye corners for gaze calculation
+const LEFT_EYE_INNER = 133;
+const LEFT_EYE_OUTER = 33;
+const RIGHT_EYE_INNER = 362;
+const RIGHT_EYE_OUTER = 263;
+// Eye top/bottom for vertical gaze
+const LEFT_EYE_TOP = 159;
+const LEFT_EYE_BOTTOM = 145;
+const RIGHT_EYE_TOP = 386;
+const RIGHT_EYE_BOTTOM = 374;
 
 interface EyeData {
-  leftEye: { x: number; y: number; width: number } | null;
-  rightEye: { x: number; y: number; width: number } | null;
+  leftEye: { x: number; y: number; width: number; height: number } | null;
+  rightEye: { x: number; y: number; width: number; height: number } | null;
+  leftIris: { x: number; y: number } | null;
+  rightIris: { x: number; y: number } | null;
   bothInFrame: boolean;
   hasValidSize: boolean;
 }
+
+interface GazeResult {
+  leftGazeX: number; // -1 to 1, 0 is center
+  leftGazeY: number;
+  rightGazeX: number;
+  rightGazeY: number;
+  isValid: boolean;
+}
+
+type FrameStatus = 'valid' | 'invalid';
 
 const Camera = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -50,36 +78,108 @@ const Camera = () => {
   const abortedRef = useRef(false);
   const previousEyeCenterRef = useRef<{ x: number; y: number } | null>(null);
   const stableFramesRef = useRef(0);
+  
+  // Gaze sliding window
+  const gazeWindowRef = useRef<FrameStatus[]>([]);
+  const frameColorRef = useRef({ r: 255, g: 255, b: 255 }); // Current interpolated color
 
   const [state, setState] = useState<RecordingState>('idle');
   const [countdown, setCountdown] = useState(CONFIG.PRE_RECORD_SECONDS);
   const [recordTime, setRecordTime] = useState(CONFIG.RECORD_SECONDS);
-  const [statusText, setStatusText] = useState('Инициализация камеры...');
   const [canRecord, setCanRecord] = useState(false);
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
   const [deleteUrl, setDeleteUrl] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [zoom, setZoom] = useState(1.5);
   const [supportsHardwareZoom, setSupportsHardwareZoom] = useState(false);
-  const [detectionStatus, setDetectionStatus] = useState<'none' | 'partial' | 'valid'>('none');
-  const [debugInfo, setDebugInfo] = useState('');
+  const [frameColor, setFrameColor] = useState<'neutral' | 'valid' | 'invalid'>('neutral');
+  const [gazeValid, setGazeValid] = useState(false);
 
   const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const recordIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const pauseTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const stateRef = useRef(state);
+  const recordingStartTimeRef = useRef<number>(0);
+  const pausedDurationRef = useRef<number>(0);
 
-  // Keep stateRef in sync
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
 
+  // Calculate gaze deviation
+  const calculateGaze = useCallback((landmarks: Results['multiFaceLandmarks'][0]): GazeResult => {
+    if (!landmarks || landmarks.length < 478) {
+      return { leftGazeX: 0, leftGazeY: 0, rightGazeX: 0, rightGazeY: 0, isValid: false };
+    }
+
+    // Left eye gaze
+    const leftIris = landmarks[LEFT_IRIS_CENTER];
+    const leftInner = landmarks[LEFT_EYE_INNER];
+    const leftOuter = landmarks[LEFT_EYE_OUTER];
+    const leftTop = landmarks[LEFT_EYE_TOP];
+    const leftBottom = landmarks[LEFT_EYE_BOTTOM];
+    
+    const leftEyeWidth = Math.abs(leftOuter.x - leftInner.x);
+    const leftEyeHeight = Math.abs(leftTop.y - leftBottom.y);
+    const leftCenterX = (leftInner.x + leftOuter.x) / 2;
+    const leftCenterY = (leftTop.y + leftBottom.y) / 2;
+    
+    const leftGazeX = (leftIris.x - leftCenterX) / leftEyeWidth;
+    const leftGazeY = (leftIris.y - leftCenterY) / leftEyeHeight;
+
+    // Right eye gaze
+    const rightIris = landmarks[RIGHT_IRIS_CENTER];
+    const rightInner = landmarks[RIGHT_EYE_INNER];
+    const rightOuter = landmarks[RIGHT_EYE_OUTER];
+    const rightTop = landmarks[RIGHT_EYE_TOP];
+    const rightBottom = landmarks[RIGHT_EYE_BOTTOM];
+    
+    const rightEyeWidth = Math.abs(rightOuter.x - rightInner.x);
+    const rightEyeHeight = Math.abs(rightTop.y - rightBottom.y);
+    const rightCenterX = (rightInner.x + rightOuter.x) / 2;
+    const rightCenterY = (rightTop.y + rightBottom.y) / 2;
+    
+    const rightGazeX = (rightIris.x - rightCenterX) / rightEyeWidth;
+    const rightGazeY = (rightIris.y - rightCenterY) / rightEyeHeight;
+
+    // Check if gaze is within threshold
+    const leftValid = 
+      Math.abs(leftGazeX) <= CONFIG.GAZE_THRESHOLD_X && 
+      Math.abs(leftGazeY) <= CONFIG.GAZE_THRESHOLD_Y;
+    const rightValid = 
+      Math.abs(rightGazeX) <= CONFIG.GAZE_THRESHOLD_X && 
+      Math.abs(rightGazeY) <= CONFIG.GAZE_THRESHOLD_Y;
+
+    return {
+      leftGazeX,
+      leftGazeY,
+      rightGazeX,
+      rightGazeY,
+      isValid: leftValid && rightValid,
+    };
+  }, []);
+
+  // Update gaze sliding window and determine stability
+  const updateGazeWindow = useCallback((isCurrentFrameValid: boolean): boolean => {
+    const status: FrameStatus = isCurrentFrameValid ? 'valid' : 'invalid';
+    gazeWindowRef.current.push(status);
+    
+    // Keep only last N frames
+    if (gazeWindowRef.current.length > CONFIG.GAZE_WINDOW_SIZE) {
+      gazeWindowRef.current.shift();
+    }
+    
+    // Count valid frames
+    const validCount = gazeWindowRef.current.filter(s => s === 'valid').length;
+    return validCount >= CONFIG.GAZE_MIN_VALID;
+  }, []);
+
   // Calculate eye data from FaceMesh landmarks
   const calculateEyeData = useCallback((landmarks: Results['multiFaceLandmarks'][0]): EyeData => {
     if (!landmarks || landmarks.length < 478) {
-      return { leftEye: null, rightEye: null, bothInFrame: false, hasValidSize: false };
+      return { leftEye: null, rightEye: null, leftIris: null, rightIris: null, bothInFrame: false, hasValidSize: false };
     }
 
-    // Get eye bounding boxes
     const getEyeBounds = (indices: number[]) => {
       const points = indices.map(i => landmarks[i]);
       const xs = points.map(p => p.x);
@@ -92,13 +192,13 @@ const Camera = () => {
         centerX: (Math.min(...xs) + Math.max(...xs)) / 2,
         centerY: (Math.min(...ys) + Math.max(...ys)) / 2,
         width: Math.max(...xs) - Math.min(...xs),
+        height: Math.max(...ys) - Math.min(...ys),
       };
     };
 
     const leftBounds = getEyeBounds(LEFT_EYE_INDICES);
     const rightBounds = getEyeBounds(RIGHT_EYE_INDICES);
 
-    // Check if both eyes are within frame bounds (with margin)
     const margin = CONFIG.FRAME_MARGIN;
     const leftInFrame = 
       leftBounds.minX > margin && 
@@ -112,13 +212,14 @@ const Camera = () => {
       rightBounds.minY > margin && 
       rightBounds.maxY < (1 - margin);
 
-    // Check eye size (not too far, not too close)
     const avgEyeWidth = (leftBounds.width + rightBounds.width) / 2;
     const hasValidSize = avgEyeWidth >= CONFIG.MIN_EYE_WIDTH && avgEyeWidth <= CONFIG.MAX_EYE_WIDTH;
 
     return {
-      leftEye: { x: leftBounds.centerX, y: leftBounds.centerY, width: leftBounds.width },
-      rightEye: { x: rightBounds.centerX, y: rightBounds.centerY, width: rightBounds.width },
+      leftEye: { x: leftBounds.centerX, y: leftBounds.centerY, width: leftBounds.width, height: leftBounds.height },
+      rightEye: { x: rightBounds.centerX, y: rightBounds.centerY, width: rightBounds.width, height: rightBounds.height },
+      leftIris: landmarks[LEFT_IRIS_CENTER] ? { x: landmarks[LEFT_IRIS_CENTER].x, y: landmarks[LEFT_IRIS_CENTER].y } : null,
+      rightIris: landmarks[RIGHT_IRIS_CENTER] ? { x: landmarks[RIGHT_IRIS_CENTER].x, y: landmarks[RIGHT_IRIS_CENTER].y } : null,
       bothInFrame: leftInFrame && rightInFrame,
       hasValidSize,
     };
@@ -128,7 +229,6 @@ const Camera = () => {
   const onFaceMeshResults = useCallback((results: Results) => {
     const currentState = stateRef.current;
     
-    // Draw debug overlay
     if (overlayCanvasRef.current && currentState !== 'preview') {
       const ctx = overlayCanvasRef.current.getContext('2d')!;
       ctx.clearRect(0, 0, CONFIG.FRAME_WIDTH, CONFIG.FRAME_HEIGHT);
@@ -136,31 +236,31 @@ const Camera = () => {
 
     // No face detected
     if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
-      setDetectionStatus('none');
-      setDebugInfo('Лицо не обнаружено');
+      setFrameColor('invalid');
+      setGazeValid(false);
       stableFramesRef.current = 0;
       previousEyeCenterRef.current = null;
+      gazeWindowRef.current = [];
       
       if (currentState === 'idle') {
         setCanRecord(false);
-        setStatusText('Лицо не обнаружено');
       } else if (currentState === 'countdown') {
-        abortCountdown('Лицо вышло из кадра');
+        abortCountdown();
       } else if (currentState === 'recording') {
-        abortRecording('Лицо вышло из кадра — запись прервана');
+        pauseRecording();
       }
       return;
     }
 
     const landmarks = results.multiFaceLandmarks[0];
     const eyeData = calculateEyeData(landmarks);
+    const gazeResult = calculateGaze(landmarks);
 
-    // Check all conditions
     const hasEyes = eyeData.leftEye !== null && eyeData.rightEye !== null;
     const eyesInFrame = eyeData.bothInFrame;
     const validSize = eyeData.hasValidSize;
 
-    // Calculate motion (head jerk detection)
+    // Calculate motion
     let motion = 0;
     if (eyeData.leftEye && eyeData.rightEye && previousEyeCenterRef.current) {
       const currentCenter = {
@@ -173,7 +273,6 @@ const Camera = () => {
       );
     }
 
-    // Update previous center
     if (eyeData.leftEye && eyeData.rightEye) {
       previousEyeCenterRef.current = {
         x: (eyeData.leftEye.x + eyeData.rightEye.x) / 2,
@@ -182,79 +281,49 @@ const Camera = () => {
     }
 
     const isHeadStable = motion < CONFIG.HEAD_JERK_THRESHOLD;
-    const allConditionsMet = hasEyes && eyesInFrame && validSize && isHeadStable;
+    const baseConditionsMet = hasEyes && eyesInFrame && validSize && isHeadStable;
+    
+    // Update gaze window and get temporal stability
+    const gazeTemporallyValid = updateGazeWindow(gazeResult.isValid && baseConditionsMet);
+    setGazeValid(gazeTemporallyValid);
 
-    // Update debug info
-    const avgWidth = eyeData.leftEye && eyeData.rightEye 
-      ? ((eyeData.leftEye.width + eyeData.rightEye.width) / 2 * 100).toFixed(1) 
-      : '0';
-    setDebugInfo(`Глаза: ${hasEyes ? '✓' : '✗'} В рамке: ${eyesInFrame ? '✓' : '✗'} Размер: ${avgWidth}% Движ: ${(motion * 100).toFixed(1)}`);
-
-    // Update detection status for visual feedback
-    if (allConditionsMet) {
-      setDetectionStatus('valid');
+    // Update frame color based on conditions
+    if (baseConditionsMet && gazeTemporallyValid) {
+      setFrameColor('valid');
     } else if (hasEyes) {
-      setDetectionStatus('partial');
+      setFrameColor('invalid');
     } else {
-      setDetectionStatus('none');
+      setFrameColor('invalid');
     }
 
     // State-specific logic
     if (currentState === 'idle') {
-      if (allConditionsMet) {
+      if (baseConditionsMet && gazeTemporallyValid) {
         stableFramesRef.current++;
         if (stableFramesRef.current >= CONFIG.STABLE_FRAMES_REQUIRED) {
           if (!canRecord) {
             setCanRecord(true);
-            setStatusText('Готово к записи');
           }
-        } else {
-          setStatusText(`Стабилизация... ${Math.round((stableFramesRef.current / CONFIG.STABLE_FRAMES_REQUIRED) * 100)}%`);
         }
       } else {
         stableFramesRef.current = 0;
         setCanRecord(false);
-        
-        if (!hasEyes) {
-          setStatusText('Глаза не обнаружены');
-        } else if (!eyesInFrame) {
-          setStatusText('Расположите глаза в белой рамке');
-        } else if (!validSize) {
-          const avgW = eyeData.leftEye && eyeData.rightEye 
-            ? (eyeData.leftEye.width + eyeData.rightEye.width) / 2 : 0;
-          if (avgW < CONFIG.MIN_EYE_WIDTH) {
-            setStatusText('Приблизьтесь к камере');
-          } else {
-            setStatusText('Отодвиньтесь от камеры');
-          }
-        } else if (!isHeadStable) {
-          setStatusText('Держите голову неподвижно');
-        }
       }
     } else if (currentState === 'countdown') {
-      if (!allConditionsMet) {
-        if (!hasEyes || !eyesInFrame) {
-          abortCountdown('Глаза вышли из рамки');
-        } else if (!isHeadStable) {
-          abortCountdown('Слишком резкое движение');
-        } else {
-          abortCountdown('Условия не соблюдены');
-        }
+      if (!baseConditionsMet || !gazeTemporallyValid) {
+        abortCountdown();
       }
     } else if (currentState === 'recording') {
-      if (!allConditionsMet) {
-        if (!hasEyes || !eyesInFrame) {
-          abortRecording('Глаза вышли из рамки — запись прервана');
-        } else if (!isHeadStable) {
-          abortRecording('Резкое движение — запись прервана');
-        } else {
-          abortRecording('Условия нарушены — запись прервана');
-        }
+      if (!baseConditionsMet || !gazeTemporallyValid) {
+        pauseRecording();
+      }
+    } else if (currentState === 'paused') {
+      if (baseConditionsMet && gazeTemporallyValid) {
+        resumeRecording();
       }
     }
-  }, [calculateEyeData, canRecord]);
+  }, [calculateEyeData, calculateGaze, updateGazeWindow, canRecord]);
 
-  // Store callback ref to avoid stale closures
   const onFaceMeshResultsRef = useRef(onFaceMeshResults);
   useEffect(() => {
     onFaceMeshResultsRef.current = onFaceMeshResults;
@@ -280,14 +349,13 @@ const Camera = () => {
           await videoRef.current.play();
         }
 
-        // Initialize FaceMesh
         const faceMesh = new FaceMesh({
           locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
         });
 
         faceMesh.setOptions({
           maxNumFaces: 1,
-          refineLandmarks: true, // For iris tracking
+          refineLandmarks: true,
           minDetectionConfidence: 0.5,
           minTrackingConfidence: 0.5,
         });
@@ -298,7 +366,6 @@ const Camera = () => {
 
         faceMeshRef.current = faceMesh;
 
-        // Start MediaPipe camera
         if (videoRef.current) {
           const mpCamera = new MediaPipeCamera(videoRef.current, {
             onFrame: async () => {
@@ -312,11 +379,8 @@ const Camera = () => {
           mpCamera.start();
           mediaPipeCameraRef.current = mpCamera;
         }
-
-        setStatusText('Расположите глаза в рамке');
       } catch (err) {
         console.error('Camera error:', err);
-        setStatusText('Ошибка доступа к камере');
       }
     };
 
@@ -331,6 +395,7 @@ const Camera = () => {
       }
       if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
       if (recordIntervalRef.current) clearInterval(recordIntervalRef.current);
+      if (pauseTimeoutRef.current) clearTimeout(pauseTimeoutRef.current);
     };
   }, []);
 
@@ -342,19 +407,29 @@ const Camera = () => {
     }
   }, [zoom, supportsHardwareZoom]);
 
-  const abortCountdown = (reason: string) => {
+  const abortCountdown = () => {
     if (countdownIntervalRef.current) {
       clearInterval(countdownIntervalRef.current);
       countdownIntervalRef.current = null;
     }
     setState('idle');
     setCountdown(CONFIG.PRE_RECORD_SECONDS);
-    setStatusText(reason);
     stableFramesRef.current = 0;
     setCanRecord(false);
   };
 
-  const abortRecording = (reason: string) => {
+  const pauseRecording = () => {
+    if (stateRef.current !== 'recording') return;
+    setState('paused');
+    pausedDurationRef.current = Date.now();
+  };
+
+  const resumeRecording = () => {
+    if (stateRef.current !== 'paused') return;
+    setState('recording');
+  };
+
+  const abortRecording = () => {
     abortedRef.current = true;
     if (recordIntervalRef.current) {
       clearInterval(recordIntervalRef.current);
@@ -366,7 +441,6 @@ const Camera = () => {
     chunksRef.current = [];
     setState('idle');
     setRecordTime(CONFIG.RECORD_SECONDS);
-    setStatusText(reason);
     stableFramesRef.current = 0;
     setCanRecord(false);
   };
@@ -375,7 +449,6 @@ const Camera = () => {
     if (state !== 'idle' || !canRecord) return;
     setState('countdown');
     setCountdown(CONFIG.PRE_RECORD_SECONDS);
-    setStatusText('Приготовьтесь...');
 
     let count = CONFIG.PRE_RECORD_SECONDS;
     countdownIntervalRef.current = setInterval(() => {
@@ -392,9 +465,9 @@ const Camera = () => {
   const startRecording = useCallback(() => {
     setState('recording');
     setRecordTime(CONFIG.RECORD_SECONDS);
-    setStatusText('ИДЁТ ЗАПИСЬ');
     chunksRef.current = [];
     abortedRef.current = false;
+    recordingStartTimeRef.current = Date.now();
 
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext('2d')!;
@@ -456,7 +529,6 @@ const Camera = () => {
         const blob = new Blob(chunksRef.current, { type: mimeType });
         setRecordedBlob(blob);
         setState('preview');
-        setStatusText('Запись завершена');
 
         if (previewRef.current) {
           previewRef.current.src = URL.createObjectURL(blob);
@@ -469,13 +541,16 @@ const Camera = () => {
 
     let count = CONFIG.RECORD_SECONDS;
     recordIntervalRef.current = setInterval(() => {
-      count--;
-      setRecordTime(count);
-      if (count <= 0) {
-        if (recordIntervalRef.current) clearInterval(recordIntervalRef.current);
-        recordIntervalRef.current = null;
-        if (recorder.state === 'recording') {
-          recorder.stop();
+      // Only decrement when actively recording
+      if (stateRef.current === 'recording') {
+        count--;
+        setRecordTime(count);
+        if (count <= 0) {
+          if (recordIntervalRef.current) clearInterval(recordIntervalRef.current);
+          recordIntervalRef.current = null;
+          if (recorder.state === 'recording') {
+            recorder.stop();
+          }
         }
       }
     }, 1000);
@@ -486,10 +561,10 @@ const Camera = () => {
     setRecordedBlob(null);
     setDeleteUrl(null);
     setCanRecord(false);
-    setStatusText('Расположите глаза в рамке');
     setRecordTime(CONFIG.RECORD_SECONDS);
     setCountdown(CONFIG.PRE_RECORD_SECONDS);
     stableFramesRef.current = 0;
+    gazeWindowRef.current = [];
     if (previewRef.current) {
       previewRef.current.src = '';
     }
@@ -499,7 +574,6 @@ const Camera = () => {
     if (!recordedBlob) return;
 
     setIsSaving(true);
-    setStatusText('Сохранение...');
 
     try {
       const formData = new FormData();
@@ -512,14 +586,12 @@ const Camera = () => {
       if (error) throw error;
 
       if (data?.success) {
-        setStatusText('Сохранено навсегда');
         setDeleteUrl(data.deleteUrl);
       } else {
         throw new Error(data?.error || 'Unknown error');
       }
     } catch (err: any) {
       console.error('Save error:', err);
-      setStatusText('Ошибка: ' + err.message);
     } finally {
       setIsSaving(false);
     }
@@ -539,13 +611,26 @@ const Camera = () => {
     setZoom(prev => Math.max(CONFIG.ZOOM_MIN, Math.min(CONFIG.ZOOM_MAX, prev + delta)));
   };
 
-  // Get frame border color based on detection status
-  const getFrameBorderClass = () => {
-    if (state === 'recording') return 'ring-4 ring-red-600';
-    if (state === 'countdown') return 'ring-2 ring-yellow-500';
-    if (detectionStatus === 'valid' && canRecord) return 'ring-2 ring-green-500';
-    if (detectionStatus === 'partial') return 'ring-2 ring-orange-500';
-    return 'ring-2 ring-red-500/50';
+  // Get frame border style with smooth color transition
+  const getFrameStyle = () => {
+    const baseStyle = {
+      width: CONFIG.FRAME_WIDTH,
+      height: CONFIG.FRAME_HEIGHT,
+      borderRadius: 12,
+      transition: 'box-shadow 250ms ease-out',
+    };
+
+    if (state === 'preview') {
+      return { ...baseStyle, boxShadow: 'inset 0 0 0 2px rgba(255,255,255,0.3)' };
+    }
+
+    if (frameColor === 'valid') {
+      return { ...baseStyle, boxShadow: 'inset 0 0 0 3px rgba(34, 197, 94, 0.6)' }; // green
+    } else if (frameColor === 'invalid') {
+      return { ...baseStyle, boxShadow: 'inset 0 0 0 3px rgba(239, 68, 68, 0.6)' }; // red
+    }
+    
+    return { ...baseStyle, boxShadow: 'inset 0 0 0 2px rgba(255,255,255,0.4)' }; // neutral white
   };
 
   return (
@@ -554,58 +639,23 @@ const Camera = () => {
         <ArrowLeft size={24} />
       </Link>
 
-      {/* Recording status */}
-      {state === 'recording' && (
-        <div className="absolute top-6 left-1/2 -translate-x-1/2 flex items-center gap-3 z-50">
-          <div className="w-3 h-3 bg-red-600 rounded-full animate-pulse" />
-          <span className="text-red-600 text-sm font-bold uppercase tracking-widest">
-            REC • ИДЁТ ЗАПИСЬ
-          </span>
-        </div>
-      )}
-
-      {/* Debug info */}
-      {state !== 'preview' && (
-        <div className="absolute top-6 right-6 text-white/30 text-xs font-mono z-50 text-right">
-          {debugInfo}
+      {/* Recording indicator - just the red dot, no text */}
+      {(state === 'recording' || state === 'paused') && (
+        <div className="absolute top-6 left-1/2 -translate-x-1/2 z-50">
+          <div className={`w-4 h-4 rounded-full ${
+            state === 'recording' ? 'bg-red-600 animate-pulse' : 'bg-yellow-500'
+          }`} />
         </div>
       )}
 
       {/* Main content */}
       <div className="flex-1 flex flex-col items-center justify-center px-4 w-full max-w-2xl">
         
-        {/* Instruction text */}
-        <p className="text-white/60 text-sm md:text-base text-center mb-8 tracking-wide">
-          {state === 'preview' ? 'Предпросмотр записи' : 'РАСПОЛОЖИТЕ ГЛАЗА СТРОГО В РАМКЕ'}
-        </p>
-
-        {/* Detection status indicator */}
-        {state !== 'preview' && (
-          <div className={`mb-4 px-4 py-2 rounded text-xs font-bold uppercase tracking-wider ${
-            detectionStatus === 'valid' && canRecord
-              ? 'bg-green-500/20 text-green-400'
-              : detectionStatus === 'partial'
-                ? 'bg-orange-500/20 text-orange-400'
-                : 'bg-red-500/20 text-red-400'
-          }`}>
-            {detectionStatus === 'valid' && canRecord
-              ? '✓ Условия выполнены'
-              : detectionStatus === 'partial'
-                ? '⚠ Частичное обнаружение'
-                : '✗ Глаза не в позиции'}
-          </div>
-        )}
-
-        {/* Video frame with eye guides */}
+        {/* Video frame with dynamic border color */}
         <div className="relative mb-8">
-          {/* Frame container with dynamic border */}
           <div 
-            className={`relative overflow-hidden transition-all duration-200 ${getFrameBorderClass()}`}
-            style={{ 
-              width: CONFIG.FRAME_WIDTH, 
-              height: CONFIG.FRAME_HEIGHT,
-              borderRadius: 12,
-            }}
+            className="relative overflow-hidden"
+            style={getFrameStyle()}
           >
             <video
               ref={videoRef}
@@ -625,30 +675,43 @@ const Camera = () => {
               className={`w-full h-full object-cover ${state !== 'preview' ? 'hidden' : ''}`}
             />
 
-            {/* Eye position guides */}
+            {/* Minimal eye position guides - no text */}
             {state !== 'preview' && (
               <div className="absolute inset-0 pointer-events-none">
-                {/* Center lines */}
+                {/* Center crosshair */}
                 <div className="absolute top-1/2 left-0 right-0 h-px bg-white/10" />
                 <div className="absolute left-1/2 top-0 bottom-0 w-px bg-white/10" />
                 
-                {/* Eye oval guides */}
-                <div className={`absolute top-1/2 -translate-y-1/2 left-[15%] w-[30%] h-[60%] border-2 border-dashed rounded-full transition-colors ${
-                  detectionStatus === 'valid' ? 'border-green-500/50' : 'border-white/30'
-                }`} />
-                <div className={`absolute top-1/2 -translate-y-1/2 right-[15%] w-[30%] h-[60%] border-2 border-dashed rounded-full transition-colors ${
-                  detectionStatus === 'valid' ? 'border-green-500/50' : 'border-white/30'
-                }`} />
+                {/* Eye oval guides with color transition */}
+                <div 
+                  className="absolute top-1/2 -translate-y-1/2 left-[15%] w-[30%] h-[60%] border border-dashed rounded-full transition-colors duration-250"
+                  style={{ 
+                    borderColor: frameColor === 'valid' 
+                      ? 'rgba(34, 197, 94, 0.4)' 
+                      : frameColor === 'invalid' 
+                        ? 'rgba(239, 68, 68, 0.3)' 
+                        : 'rgba(255,255,255,0.2)' 
+                  }}
+                />
+                <div 
+                  className="absolute top-1/2 -translate-y-1/2 right-[15%] w-[30%] h-[60%] border border-dashed rounded-full transition-colors duration-250"
+                  style={{ 
+                    borderColor: frameColor === 'valid' 
+                      ? 'rgba(34, 197, 94, 0.4)' 
+                      : frameColor === 'invalid' 
+                        ? 'rgba(239, 68, 68, 0.3)' 
+                        : 'rgba(255,255,255,0.2)' 
+                  }}
+                />
                 
                 {/* Corner markers */}
-                <div className="absolute top-2 left-2 w-4 h-4 border-l-2 border-t-2 border-white/40" />
-                <div className="absolute top-2 right-2 w-4 h-4 border-r-2 border-t-2 border-white/40" />
-                <div className="absolute bottom-2 left-2 w-4 h-4 border-l-2 border-b-2 border-white/40" />
-                <div className="absolute bottom-2 right-2 w-4 h-4 border-r-2 border-b-2 border-white/40" />
+                <div className="absolute top-2 left-2 w-3 h-3 border-l border-t border-white/30" />
+                <div className="absolute top-2 right-2 w-3 h-3 border-r border-t border-white/30" />
+                <div className="absolute bottom-2 left-2 w-3 h-3 border-l border-b border-white/30" />
+                <div className="absolute bottom-2 right-2 w-3 h-3 border-r border-b border-white/30" />
               </div>
             )}
 
-            {/* Debug overlay canvas */}
             <canvas 
               ref={overlayCanvasRef}
               width={CONFIG.FRAME_WIDTH}
@@ -658,16 +721,17 @@ const Camera = () => {
           </div>
         </div>
 
-        {/* Timer display */}
-        {(state === 'countdown' || state === 'recording') && (
-          <div className={`text-8xl md:text-9xl font-bold mb-8 tabular-nums ${
-            state === 'recording' ? 'text-red-600' : 'text-white'
+        {/* Timer display - numbers only, no text */}
+        {(state === 'countdown' || state === 'recording' || state === 'paused') && (
+          <div className={`text-8xl md:text-9xl font-bold mb-8 tabular-nums transition-colors duration-200 ${
+            state === 'recording' ? 'text-red-600' : 
+            state === 'paused' ? 'text-yellow-500' : 'text-white'
           }`}>
             {state === 'countdown' ? countdown : recordTime}
           </div>
         )}
 
-        {/* Zoom controls */}
+        {/* Zoom controls - no text labels */}
         {state === 'idle' && !supportsHardwareZoom && (
           <div className="flex items-center gap-4 mb-6">
             <button
@@ -676,8 +740,8 @@ const Camera = () => {
             >
               <Minus size={16} />
             </button>
-            <span className="text-white/40 text-sm w-24 text-center font-mono">
-              {zoom.toFixed(1)}x
+            <span className="text-white/40 text-sm w-16 text-center font-mono tabular-nums">
+              {zoom.toFixed(1)}×
             </span>
             <button
               onClick={() => adjustZoom(CONFIG.ZOOM_STEP)}
@@ -687,15 +751,6 @@ const Camera = () => {
             </button>
           </div>
         )}
-
-        {/* Status text */}
-        <p className={`text-sm mb-8 text-center tracking-wide ${
-          state === 'recording' ? 'text-red-500 font-bold' : 
-          detectionStatus === 'valid' && canRecord ? 'text-green-500' : 
-          detectionStatus === 'partial' ? 'text-orange-400' : 'text-white/50'
-        }`}>
-          {statusText}
-        </p>
 
         {/* Action buttons */}
         {state === 'idle' && (
@@ -708,7 +763,7 @@ const Camera = () => {
                 : 'bg-white/10 text-white/30 cursor-not-allowed'
             }`}
           >
-            Записать
+            ●
           </button>
         )}
 
@@ -719,30 +774,27 @@ const Camera = () => {
               disabled={isSaving}
               className="w-full px-8 py-4 bg-white text-black text-sm font-bold uppercase tracking-widest hover:bg-white/90 transition-colors disabled:opacity-50"
             >
-              {isSaving ? 'Сохранение...' : 'Оставить навсегда'}
+              ✓
             </button>
             <button
               onClick={resetRecording}
               disabled={isSaving}
               className="w-full px-8 py-3 border border-white/30 text-white/60 text-sm uppercase tracking-widest hover:bg-white/10 transition-colors disabled:opacity-50"
             >
-              Записать заново
+              ↺
             </button>
             <button
               onClick={downloadVideo}
               className="w-full px-8 py-3 border border-white/20 text-white/40 text-xs uppercase tracking-widest hover:bg-white/5 transition-colors"
             >
-              Скачать
+              ↓
             </button>
           </div>
         )}
 
         {deleteUrl && (
           <div className="text-center max-w-sm">
-            <p className="text-green-500 mb-4 text-sm">Сохранено навсегда</p>
-            <p className="text-white/40 text-xs mb-4">
-              Сохраните эту ссылку — она позволяет удалить запись в любой момент:
-            </p>
+            <div className="text-green-500 mb-4 text-2xl">✓</div>
             <code className="block bg-white/5 p-3 text-xs break-all text-white/60 mb-6">
               {deleteUrl}
             </code>
@@ -750,7 +802,7 @@ const Camera = () => {
               to="/canvas" 
               className="inline-block px-8 py-3 bg-white text-black text-sm font-bold uppercase tracking-widest hover:bg-white/90 transition-colors"
             >
-              Смотреть все глаза
+              →
             </Link>
           </div>
         )}
