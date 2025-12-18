@@ -464,11 +464,11 @@ const Camera = () => {
   setIsSaving(true);
 
   try {
-    // Генерируем уникальное имя файла
+    // 1. Генерируем уникальное имя файла
     const fileId = crypto.randomUUID();
     const fileName = `eyes-${Date.now()}-${fileId.slice(0, 8)}.webm`;
 
-    // Прямая загрузка в Storage
+    // 2. Прямая загрузка в Storage
     const { error: uploadError } = await supabase.storage
       .from('eyes')
       .upload(fileName, recordedBlob, {
@@ -476,33 +476,46 @@ const Camera = () => {
         upsert: false,
       });
 
-    if (uploadError) {
-      console.error('Upload error:', uploadError);
-      alert('Ошибка загрузки: ' + uploadError.message);
-      return;
-    }
+    if (uploadError) throw uploadError;
 
-    console.log('Uploaded successfully:', fileName);
-
-    // Добавляем запись в таблицу eyes (чтобы Canvas увидел видео)
-    const { error: dbError } = await supabase
+    // 3. Добавляем запись в таблицу eyes (чтобы Canvas увидел)
+    const { error: eyesError } = await supabase
       .from('eyes')
       .insert({ cid: fileName });
 
-    if (dbError) {
-      console.error('Database insert error:', dbError);
-      alert('Видео загружено, но не отображается в галерее. Обновите страницу позже.');
-      // Не прерываем — видео уже в storage, просто не сразу видно
+    if (eyesError) {
+      console.warn('Не удалось добавить в таблицу eyes, но видео загружено:', eyesError);
+      // Не прерываем — главное, что видео в storage
     }
 
-    // Успех!
-    alert('Спасибо! Ваш взгляд добавлен в вечное полотно.');
-    // Можно перейти на canvas или просто сбросить
-    resetRecording();
+    // 4. Генерируем уникальный одноразовый токен для удаления
+    const deleteToken = crypto.randomUUID();
+
+    const { error: tokenError } = await supabase
+      .from('delete_tokens')
+      .insert({
+        cid: fileName,
+        delete_token: deleteToken,
+      });
+
+    if (tokenError) {
+      console.warn('Не удалось создать токен удаления:', tokenError);
+      // Продолжаем — пользователь всё равно увидит видео
+    }
+
+    // 5. Формируем ссылку для удаления
+    const siteUrl = window.location.origin; // например https://vechnoe.netlify.app
+    const deleteUrl = `${siteUrl}/delete?token=${deleteToken}`;
+
+    // 6. Показываем пользователю ссылку
+    setDeleteUrl(deleteUrl);
+
+    // Опционально: сброс формы или переход на canvas
+    // resetRecording(); // если хочешь сбросить камеру сразу
 
   } catch (err: any) {
     console.error('Save error:', err);
-    alert('Ошибка: ' + err.message);
+    alert('Ошибка сохранения: ' + err.message);
   } finally {
     setIsSaving(false);
   }
