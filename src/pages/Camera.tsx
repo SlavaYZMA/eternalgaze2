@@ -469,32 +469,40 @@ const Camera = () => {
     const fileName = `eyes-${Date.now()}-${fileId.slice(0, 8)}.webm`;
 
     // Прямая загрузка в Storage
-    const { data, error } = await supabase.storage
+    const { error: uploadError } = await supabase.storage
       .from('eyes')
       .upload(fileName, recordedBlob, {
         contentType: 'video/webm',
         upsert: false,
       });
 
-    if (error) {
-      console.error('Upload error:', error);
-      throw error;
+    if (uploadError) {
+      console.error('Upload error:', uploadError);
+      alert('Ошибка загрузки: ' + uploadError.message);
+      return;
     }
 
     console.log('Uploaded successfully:', fileName);
 
-    // Получаем публичный URL
-    const { data: urlData } = supabase.storage
+    // Добавляем запись в таблицу eyes (чтобы Canvas увидел видео)
+    const { error: dbError } = await supabase
       .from('eyes')
-      .getPublicUrl(fileName);
+      .insert({ cid: fileName });
 
-    // Для удаления — просто показываем URL файла (пользователь может удалить вручную позже, или добавим админ-панель)
-    // Или просто говорим "сохранено навсегда"
-    setDeleteUrl("Видео сохранено навсегда. Для удаления напишите на support@...");
+    if (dbError) {
+      console.error('Database insert error:', dbError);
+      alert('Видео загружено, но не отображается в галерее. Обновите страницу позже.');
+      // Не прерываем — видео уже в storage, просто не сразу видно
+    }
+
+    // Успех!
+    alert('Спасибо! Ваш взгляд добавлен в вечное полотно.');
+    // Можно перейти на canvas или просто сбросить
+    resetRecording();
 
   } catch (err: any) {
     console.error('Save error:', err);
-    alert('Ошибка сохранения: ' + err.message);
+    alert('Ошибка: ' + err.message);
   } finally {
     setIsSaving(false);
   }
