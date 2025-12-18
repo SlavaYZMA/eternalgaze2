@@ -1,20 +1,28 @@
 import { Link } from 'react-router-dom';
 import { useState, useEffect } from 'react';
-import { X } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
+import { useLanguage } from '@/contexts/LanguageContext';
+import LanguageSwitcher from '@/components/LanguageSwitcher';
+import AboutModal from '@/components/modals/AboutModal';
+import ArtistStatementModal from '@/components/modals/ArtistStatementModal';
+import EthicsModal from '@/components/modals/EthicsModal';
+import ParticipateModal from '@/components/modals/ParticipateModal';
+import ContactsModal from '@/components/modals/ContactsModal';
 
 interface EyeRecord {
   cid: string;
 }
 
+type ModalType = 'about' | 'statement' | 'ethics' | 'participate' | 'contacts' | null;
+
 const Index = () => {
-  const [showAbout, setShowAbout] = useState(false);
+  const { t } = useLanguage();
+  const [activeModal, setActiveModal] = useState<ModalType>(null);
   const [backgroundEyes, setBackgroundEyes] = useState<EyeRecord[]>([]);
 
   const storageUrl = `${import.meta.env.VITE_SUPABASE_URL}/storage/v1/object/public/eyes/`;
 
   useEffect(() => {
-    // Load some eyes for background
     const loadEyes = async () => {
       const { data } = await supabase
         .from('eyes')
@@ -24,6 +32,14 @@ const Index = () => {
     };
     loadEyes();
   }, []);
+
+  const navItems: { key: ModalType; labelKey: string }[] = [
+    { key: 'about', labelKey: 'nav.about' },
+    { key: 'statement', labelKey: 'nav.statement' },
+    { key: 'ethics', labelKey: 'nav.ethics' },
+    { key: 'participate', labelKey: 'nav.participate' },
+    { key: 'contacts', labelKey: 'nav.contacts' },
+  ];
 
   return (
     <div className="min-h-screen bg-black text-white relative overflow-hidden font-mono">
@@ -50,24 +66,39 @@ const Index = () => {
 
       {/* Content */}
       <div className="relative z-10 min-h-screen flex flex-col">
-        {/* Header */}
-        <header className="p-6 md:p-10">
-          <h1 className="text-lg md:text-xl font-bold tracking-[0.3em] text-white/90">
-            ГОРГОНА
-          </h1>
+        {/* Header with navigation */}
+        <header className="p-4 md:p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h1 className="text-base md:text-lg font-bold tracking-[0.3em] text-white/90">
+              {t('index.title')}
+            </h1>
+            <LanguageSwitcher />
+          </div>
+          
+          {/* Navigation menu */}
+          <nav className="flex flex-wrap gap-x-4 gap-y-2 md:gap-x-6">
+            {navItems.map(item => (
+              <button
+                key={item.key}
+                onClick={() => setActiveModal(item.key)}
+                className="text-white/40 text-xs tracking-widest hover:text-white/80 transition-colors"
+              >
+                {t(item.labelKey)}
+              </button>
+            ))}
+          </nav>
         </header>
 
-        {/* Main content - centered like patternradio */}
-        <main className="flex-1 flex flex-col items-center justify-center px-6 -mt-20">
+        {/* Main content - centered */}
+        <main className="flex-1 flex flex-col items-center justify-center px-6 -mt-10">
           <div className="max-w-2xl text-center">
             <h2 className="text-3xl md:text-5xl lg:text-6xl font-light tracking-wide mb-8 leading-tight">
-              <span className="text-white">ВЕЧНОЕ</span>
-              <span className="text-white/40 ml-4">ПОЛОТНО</span>
+              <span className="text-white">{t('index.subtitle1')}</span>
+              <span className="text-white/40 ml-4">{t('index.subtitle2')}</span>
             </h2>
             
             <p className="text-white/40 text-sm md:text-base leading-relaxed max-w-lg mx-auto mb-12 tracking-wide">
-              Каждая пара глаз принадлежит человеку, пережившему насилие. 
-              Они остаются здесь навсегда, пока сам человек не решит иначе.
+              {t('index.description')}
             </p>
 
             {/* Action buttons */}
@@ -76,69 +107,45 @@ const Index = () => {
                 to="/camera" 
                 className="px-10 py-4 border border-white text-white text-sm tracking-[0.2em] hover:bg-white hover:text-black transition-all duration-300"
               >
-                ЗАПИСАТЬ
+                {t('index.record')}
               </Link>
               <Link 
                 to="/canvas" 
                 className="px-10 py-4 border border-white/30 text-white/60 text-sm tracking-[0.2em] hover:border-white hover:text-white transition-all duration-300"
               >
-                СМОТРЕТЬ
+                {t('index.watch')}
               </Link>
             </div>
           </div>
         </main>
 
         {/* Footer */}
-        <footer className="p-6 md:p-10 flex items-center justify-between">
-          <button
-            onClick={() => setShowAbout(true)}
-            className="text-white/30 text-xs tracking-widest hover:text-white/60 transition-colors"
-          >
-            О ПРОЕКТЕ
-          </button>
+        <footer className="p-4 md:p-6 flex items-center justify-center">
           <span className="text-white/20 text-xs tracking-widest">© 2024</span>
         </footer>
       </div>
 
-      {/* About Modal */}
-      {showAbout && (
-        <div 
-          className="fixed inset-0 bg-black/95 z-50 flex items-center justify-center p-6"
-          onClick={() => setShowAbout(false)}
-        >
-          <div 
-            className="bg-black border border-white/10 max-w-xl w-full max-h-[80vh] overflow-y-auto p-8 md:p-12 relative"
-            onClick={e => e.stopPropagation()}
-          >
-            <button
-              onClick={() => setShowAbout(false)}
-              className="absolute top-4 right-4 text-white/30 hover:text-white transition-colors"
-            >
-              <X size={20} />
-            </button>
-
-            <h2 className="text-xl tracking-[0.2em] mb-8 text-white/90">О ПРОЕКТЕ</h2>
-            
-            <div className="space-y-6 text-sm leading-relaxed text-white/50">
-              <p>
-                <span className="text-white/80">ГОРГОНА</span> — анонимный цифровой мемориал для тех, кто пережил насилие.
-              </p>
-              <p>
-                Каждый посетитель может записать короткое видео своих глаз — без лица, без имени, без идентификации. Эти глаза становятся частью вечного полотна памяти.
-              </p>
-              <p>
-                Видео хранится навсегда. Единственный человек, который может его удалить — тот, кто его создал.
-              </p>
-              <p>
-                Проект назван в честь Горгоны Медузы — существа, чей взгляд обращал в камень. Здесь взгляд становится символом несломленной воли.
-              </p>
-              <p className="text-white/30 text-xs pt-4 border-t border-white/10">
-                Никакие личные данные не собираются. Все записи полностью анонимны.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Modals */}
+      <AboutModal 
+        isOpen={activeModal === 'about'} 
+        onClose={() => setActiveModal(null)} 
+      />
+      <ArtistStatementModal 
+        isOpen={activeModal === 'statement'} 
+        onClose={() => setActiveModal(null)} 
+      />
+      <EthicsModal 
+        isOpen={activeModal === 'ethics'} 
+        onClose={() => setActiveModal(null)} 
+      />
+      <ParticipateModal 
+        isOpen={activeModal === 'participate'} 
+        onClose={() => setActiveModal(null)} 
+      />
+      <ContactsModal 
+        isOpen={activeModal === 'contacts'} 
+        onClose={() => setActiveModal(null)} 
+      />
     </div>
   );
 };

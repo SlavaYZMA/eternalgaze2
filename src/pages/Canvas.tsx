@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { ArrowLeft, Trash2, Shield } from 'lucide-react';
+import { useLanguage } from '@/contexts/LanguageContext';
 
 interface EyeRecord {
   cid: string;
@@ -12,8 +13,10 @@ const ADMIN_SECRET_KEY = 'gorgona_admin_secret';
 const ITEMS_PER_PAGE = 100;
 const VIDEO_WIDTH = 512;
 const VIDEO_HEIGHT = 128;
+const MIN_VIDEO_WIDTH = 150;
 
 const Canvas = () => {
+  const { t } = useLanguage();
   const [searchParams] = useSearchParams();
   const [eyes, setEyes] = useState<EyeRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -23,8 +26,8 @@ const Canvas = () => {
   const [page, setPage] = useState(0);
   const [deletingCid, setDeletingCid] = useState<string | null>(null);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
-  const [itemScale, setItemScale] = useState(1);
-  const [itemsPerRow, setItemsPerRow] = useState(1);
+  const [itemWidth, setItemWidth] = useState(VIDEO_WIDTH);
+  const [itemsPerRow, setItemsPerRow] = useState(4);
   
   const containerRef = useRef<HTMLDivElement | null>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
@@ -32,69 +35,39 @@ const Canvas = () => {
 
   const storageUrl = `${import.meta.env.VITE_SUPABASE_URL}/storage/v1/object/public/eyes/`;
 
-  // Calculate optimal scale and items per row
+  // Calculate layout: adaptive grid, no horizontal gaps when enough content
   const calculateLayout = useCallback(() => {
-    if (!containerRef.current) return;
-    
     const viewportWidth = window.innerWidth;
-    const totalItems = eyes.length;
     
-    if (totalItems === 0) {
-      setItemScale(1);
+    // Calculate base items per row at standard size
+    const baseItemsPerRow = Math.max(1, Math.floor(viewportWidth / VIDEO_WIDTH));
+    
+    // If viewport is smaller than MIN_VIDEO_WIDTH, use min width with scroll
+    if (viewportWidth < MIN_VIDEO_WIDTH) {
+      setItemWidth(MIN_VIDEO_WIDTH);
       setItemsPerRow(1);
       return;
     }
 
-    // Calculate how many items can fit per row at scale 1
-    const baseItemsPerRow = Math.floor(viewportWidth / VIDEO_WIDTH);
+    // Calculate item width to exactly fill viewport
+    // This eliminates horizontal gaps
+    const calculatedWidth = viewportWidth / baseItemsPerRow;
     
-    if (baseItemsPerRow < 1) {
-      // Viewport smaller than single item - scale down to fit
-      const scale = viewportWidth / VIDEO_WIDTH;
-      setItemScale(scale);
-      setItemsPerRow(1);
-      return;
-    }
-
-    // Calculate total rows needed at scale 1
-    const rowsAtScale1 = Math.ceil(totalItems / baseItemsPerRow);
-    
-    // Check if we have enough content to fill width
-    // If total items < items that would fill one row, allow gaps
-    if (totalItems < baseItemsPerRow) {
-      // Not enough items - use scale 1, center is allowed
-      setItemScale(1);
-      setItemsPerRow(totalItems);
-      return;
-    }
-
-    // We have enough items - calculate scale to eliminate horizontal gaps
-    // Find the scale that makes items fill the viewport width exactly
-    const perfectItemsPerRow = baseItemsPerRow;
-    const scaledWidth = VIDEO_WIDTH * perfectItemsPerRow;
-    
-    if (scaledWidth < viewportWidth) {
-      // Scale up items to fill width completely
-      const scale = viewportWidth / scaledWidth;
-      setItemScale(scale);
-      setItemsPerRow(perfectItemsPerRow);
+    // Ensure minimum width
+    if (calculatedWidth < MIN_VIDEO_WIDTH) {
+      const adjustedItemsPerRow = Math.max(1, Math.floor(viewportWidth / MIN_VIDEO_WIDTH));
+      setItemWidth(viewportWidth / adjustedItemsPerRow);
+      setItemsPerRow(adjustedItemsPerRow);
     } else {
-      // Items already fill or exceed width
-      setItemScale(1);
+      setItemWidth(calculatedWidth);
       setItemsPerRow(baseItemsPerRow);
     }
-  }, [eyes.length]);
+  }, []);
 
-  // Recalculate on resize and content change
   useEffect(() => {
     calculateLayout();
-    
-    const handleResize = () => {
-      calculateLayout();
-    };
-    
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    window.addEventListener('resize', calculateLayout);
+    return () => window.removeEventListener('resize', calculateLayout);
   }, [calculateLayout]);
 
   useEffect(() => {
@@ -237,14 +210,13 @@ const Canvas = () => {
     }
   };
 
-  // Calculate scaled dimensions
-  const scaledWidth = Math.round(VIDEO_WIDTH * itemScale);
-  const scaledHeight = Math.round(VIDEO_HEIGHT * itemScale);
+  // Calculate item height maintaining aspect ratio
+  const itemHeight = Math.round((itemWidth / VIDEO_WIDTH) * VIDEO_HEIGHT);
 
   if (loading && eyes.length === 0) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center font-mono">
-        <p className="text-white/30 text-sm tracking-widest">ЗАГРУЗКА...</p>
+        <p className="text-white/30 text-sm tracking-widest">{t('canvas.loading')}</p>
       </div>
     );
   }
@@ -258,7 +230,7 @@ const Canvas = () => {
   }
 
   return (
-    <div className="min-h-screen bg-black font-mono overflow-x-auto">
+    <div className="min-h-screen bg-black font-mono">
       {/* Fixed header */}
       <div className="fixed top-0 left-0 right-0 z-50 bg-gradient-to-b from-black via-black/80 to-transparent pointer-events-none">
         <div className="flex items-center justify-between p-4 md:p-6 pointer-events-auto">
@@ -269,7 +241,7 @@ const Canvas = () => {
           <div className="flex items-center gap-4">
             {isAdmin && (
               <span className="text-red-500 text-xs font-bold tracking-widest">
-                ADMIN
+                {t('canvas.admin')}
               </span>
             )}
             <button
@@ -313,26 +285,23 @@ const Canvas = () => {
 
       {eyes.length === 0 ? (
         <div className="min-h-screen flex items-center justify-center">
-          <p className="text-white/20 text-sm tracking-widest">НЕТ ЗАПИСЕЙ</p>
+          <p className="text-white/20 text-sm tracking-widest">{t('canvas.empty')}</p>
         </div>
       ) : (
         <>
-          {/* Full-width dense grid - no centering, no padding */}
+          {/* Full-width grid - no horizontal gaps */}
           <div 
             ref={containerRef}
-            className="flex flex-wrap items-start content-start"
-            style={{ 
-              minWidth: '100vw',
-              paddingTop: 80, // Space for header
-            }}
+            className="flex flex-wrap"
+            style={{ paddingTop: 80 }}
           >
             {eyes.map((eye) => (
               <div
                 key={eye.cid}
                 className="relative group flex-shrink-0"
                 style={{ 
-                  width: scaledWidth, 
-                  height: scaledHeight,
+                  width: itemWidth, 
+                  height: itemHeight,
                 }}
               >
                 <video
@@ -365,10 +334,15 @@ const Canvas = () => {
             ))}
           </div>
 
+          {/* Scroll hint shadow at bottom */}
+          {hasMore && (
+            <div className="fixed bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-black/60 to-transparent pointer-events-none" />
+          )}
+
           {/* Load more trigger */}
           {hasMore && (
             <div ref={loadMoreRef} className="h-32 flex items-center justify-center">
-              <p className="text-white/20 text-xs tracking-widest">ЗАГРУЗКА...</p>
+              <p className="text-white/20 text-xs tracking-widest">{t('canvas.loading')}</p>
             </div>
           )}
         </>
