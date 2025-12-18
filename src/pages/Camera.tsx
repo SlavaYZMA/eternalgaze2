@@ -459,31 +459,46 @@ const Camera = () => {
   };
 
   const saveForever = async () => {
-    if (!recordedBlob || !consentAccepted) return;
+  if (!recordedBlob || !consentAccepted) return;
 
-    setIsSaving(true);
+  setIsSaving(true);
 
-    try {
-      const formData = new FormData();
-      formData.append('video', recordedBlob, 'eye-recording.webm');
+  try {
+    // Генерируем уникальное имя файла
+    const fileId = crypto.randomUUID();
+    const fileName = `eyes-${Date.now()}-${fileId.slice(0, 8)}.webm`;
 
-      const { data, error } = await supabase.functions.invoke('save-eyes', {
-        body: formData
+    // Прямая загрузка в Storage
+    const { data, error } = await supabase.storage
+      .from('eyes')
+      .upload(fileName, recordedBlob, {
+        contentType: 'video/webm',
+        upsert: false,
       });
 
-      if (error) throw error;
-
-      if (data?.success) {
-        setDeleteUrl(data.deleteUrl);
-      } else {
-        throw new Error(data?.error || 'Unknown error');
-      }
-    } catch (err: any) {
-      console.error('Save error:', err);
-    } finally {
-      setIsSaving(false);
+    if (error) {
+      console.error('Upload error:', error);
+      throw error;
     }
-  };
+
+    console.log('Uploaded successfully:', fileName);
+
+    // Получаем публичный URL
+    const { data: urlData } = supabase.storage
+      .from('eyes')
+      .getPublicUrl(fileName);
+
+    // Для удаления — просто показываем URL файла (пользователь может удалить вручную позже, или добавим админ-панель)
+    // Или просто говорим "сохранено навсегда"
+    setDeleteUrl("Видео сохранено навсегда. Для удаления напишите на support@...");
+
+  } catch (err: any) {
+    console.error('Save error:', err);
+    alert('Ошибка сохранения: ' + err.message);
+  } finally {
+    setIsSaving(false);
+  }
+};
 
   const downloadVideo = () => {
     if (!recordedBlob) return;
