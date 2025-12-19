@@ -22,7 +22,6 @@ const ContactsModal = ({ isOpen, onClose }: Props) => {
           eternalcanvas@proton.me
         </a>
       </section>
-
       <section>
         <h3 className="text-white/90 font-bold tracking-wider mb-4">
           INSTAGRAM
@@ -36,24 +35,11 @@ const ContactsModal = ({ isOpen, onClose }: Props) => {
           @eternalcanvas_art
         </a>
       </section>
-
-      <section className="pt-6 border-t border-white/10">
-        <p className="text-white/40 text-xs">
-          {language === 'ru' 
-            ? 'По любым вопросам, включая запросы на удаление видео, обращайтесь по электронной почте.'
-            : 'For any questions, including video deletion requests, please contact us by email.'
-          }
-        </p>
-      </section>
     </div>
   );
 
   return (
-    <NavModal 
-      isOpen={isOpen} 
-      onClose={onClose} 
-      title={t('nav.contacts')}
-    >
+    <NavModal isOpen={isOpen} onClose={onClose} title={t('nav.contacts')}>
       {content}
     </NavModal>
   );
