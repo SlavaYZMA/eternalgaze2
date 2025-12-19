@@ -1,5 +1,4 @@
 import { X } from 'lucide-react';
-import { useLanguage } from '@/contexts/LanguageContext';
 
 interface NavModalProps {
   isOpen: boolean;
@@ -9,15 +8,17 @@ interface NavModalProps {
 }
 
 const NavModal = ({ isOpen, onClose, children, title }: NavModalProps) => {
-  if (!isOpen) return null;
-
   return (
-    <div 
-      className="fixed inset-0 bg-black/95 z-50 flex items-center justify-center p-4 md:p-6 animate-fade-in"
+    <div
+      className={`
+        fixed inset-0 z-50 flex items-center justify-center p-4 md:p-6
+        bg-black/95 transition-opacity duration-200
+        ${isOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}
+      `}
       onClick={onClose}
     >
-      <div 
-        className="bg-black border border-white/10 max-w-2xl w-full max-h-[85vh] overflow-y-auto relative animate-scale-in"
+      <div
+        className="bg-black border border-white/10 max-w-2xl w-full max-h-[85vh] overflow-y-auto relative"
         onClick={e => e.stopPropagation()}
       >
         <div className="sticky top-0 bg-black border-b border-white/10 p-4 md:p-6 flex items-center justify-between">
@@ -31,7 +32,7 @@ const NavModal = ({ isOpen, onClose, children, title }: NavModalProps) => {
             <X size={20} />
           </button>
         </div>
-        
+
         <div className="p-4 md:p-6">
           {children}
         </div>
