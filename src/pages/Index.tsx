@@ -8,15 +8,20 @@ import ArtistStatementModal from '@/components/modals/ArtistStatementModal';
 import EthicsModal from '@/components/modals/EthicsModal';
 import ParticipateModal from '@/components/modals/ParticipateModal';
 import ContactsModal from '@/components/modals/ContactsModal';
+
 interface EyeRecord {
   cid: string;
 }
+
 type ModalType = 'about' | 'statement' | 'ethics' | 'participate' | 'contacts' | null;
+
 const Index = () => {
   const { t } = useLanguage();
   const [activeModal, setActiveModal] = useState<ModalType>(null);
   const [backgroundEyes, setBackgroundEyes] = useState<EyeRecord[]>([]);
-  const storageUrl = ${import.meta.env.VITE_SUPABASE_URL}/storage/v1/object/public/eyes/;
+
+  const storageUrl = `${import.meta.env.VITE_SUPABASE_URL}/storage/v1/object/public/eyes/`;
+
   useEffect(() => {
     const loadEyes = async () => {
       const { data } = await supabase
@@ -27,6 +32,7 @@ const Index = () => {
     };
     loadEyes();
   }, []);
+
   const navItems: { key: ModalType; labelKey: string }[] = [
     { key: 'about', labelKey: 'nav.about' },
     { key: 'statement', labelKey: 'nav.statement' },
@@ -34,17 +40,18 @@ const Index = () => {
     { key: 'participate', labelKey: 'nav.participate' },
     { key: 'contacts', labelKey: 'nav.contacts' },
   ];
+
   return (
     <div className="min-h-screen bg-black text-white relative overflow-hidden font-mono">
-     
-      {/* Background canvas preview - very dim */}
+      
+      {/* Фоновый слой с видео — строго сзади, не мешает кликам */}
       {backgroundEyes.length > 0 && (
-        <div className="absolute inset-0 opacity-[0.08] pointer-events-none">
-          <div className="flex flex-wrap w-full">
+        <div className="fixed inset-0 opacity-[0.08] pointer-events-none -z-10">
+          <div className="flex flex-wrap w-full h-full">
             {backgroundEyes.map((eye, i) => (
               <div key={eye.cid + i} className="flex-shrink-0" style={{ width: 512, height: 128 }}>
                 <video
-                  src={${storageUrl}${eye.cid}}
+                  src={`${storageUrl}${eye.cid}`}
                   autoPlay
                   loop
                   muted
@@ -56,7 +63,8 @@ const Index = () => {
           </div>
         </div>
       )}
-      {/* Content */}
+
+      {/* Основной контент */}
       <div className="relative z-10 min-h-screen flex flex-col">
         {/* Header with navigation */}
         <header className="p-4 md:p-6">
@@ -80,6 +88,7 @@ const Index = () => {
             ))}
           </nav>
         </header>
+
         {/* Main content - centered */}
         <main className="flex-1 flex flex-col items-center justify-center px-6 -mt-10">
           <div className="max-w-2xl text-center">
@@ -91,6 +100,7 @@ const Index = () => {
             <p className="text-white/40 text-sm md:text-base leading-relaxed max-w-lg mx-auto mb-12 tracking-wide">
               {t('index.description')}
             </p>
+
             {/* Action buttons */}
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
               <Link
@@ -108,11 +118,13 @@ const Index = () => {
             </div>
           </div>
         </main>
+
         {/* Footer */}
         <footer className="p-4 md:p-6 flex items-center justify-center">
-          <span className="text-white/20 text-xs tracking-widest">© 2024</span>
+          <span className="text-white/20 text-xs tracking-widest">© 2025 Слава</span>
         </footer>
       </div>
+
       {/* Modals */}
       <AboutModal
         isOpen={activeModal === 'about'}
@@ -137,4 +149,5 @@ const Index = () => {
     </div>
   );
 };
+
 export default Index;
