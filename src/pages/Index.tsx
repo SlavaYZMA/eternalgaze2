@@ -44,10 +44,10 @@ const Index = () => {
   return (
     <div className="min-h-screen bg-black text-white relative overflow-hidden font-mono">
       
-      {/* Background canvas preview - very dim */}
+      {/* Фоновый слой с видео — строго сзади, не мешает кликам */}
       {backgroundEyes.length > 0 && (
-        <div className="absolute inset-0 opacity-[0.08] pointer-events-none">
-          <div className="flex flex-wrap w-full">
+        <div className="fixed inset-0 opacity-[0.08] pointer-events-none -z-10">
+          <div className="flex flex-wrap w-full h-full">
             {backgroundEyes.map((eye, i) => (
               <div key={eye.cid + i} className="flex-shrink-0" style={{ width: 512, height: 128 }}>
                 <video
@@ -64,7 +64,7 @@ const Index = () => {
         </div>
       )}
 
-      {/* Content */}
+      {/* Основной контент */}
       <div className="relative z-10 min-h-screen flex flex-col">
         {/* Header with navigation */}
         <header className="p-4 md:p-6">
@@ -74,7 +74,7 @@ const Index = () => {
             </h1>
             <LanguageSwitcher />
           </div>
-          
+         
           {/* Navigation menu */}
           <nav className="flex flex-wrap gap-x-4 gap-y-2 md:gap-x-6">
             {navItems.map(item => (
@@ -96,21 +96,21 @@ const Index = () => {
               <span className="text-white">{t('index.subtitle1')}</span>
               <span className="text-white/40 ml-4">{t('index.subtitle2')}</span>
             </h2>
-            
+           
             <p className="text-white/40 text-sm md:text-base leading-relaxed max-w-lg mx-auto mb-12 tracking-wide">
               {t('index.description')}
             </p>
 
             {/* Action buttons */}
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <Link 
-                to="/camera" 
+              <Link
+                to="/camera"
                 className="px-10 py-4 border border-white text-white text-sm tracking-[0.2em] hover:bg-white hover:text-black transition-all duration-300"
               >
                 {t('index.record')}
               </Link>
-              <Link 
-                to="/canvas" 
+              <Link
+                to="/canvas"
                 className="px-10 py-4 border border-white/30 text-white/60 text-sm tracking-[0.2em] hover:border-white hover:text-white transition-all duration-300"
               >
                 {t('index.watch')}
@@ -121,30 +121,30 @@ const Index = () => {
 
         {/* Footer */}
         <footer className="p-4 md:p-6 flex items-center justify-center">
-          <span className="text-white/20 text-xs tracking-widest">© 2024</span>
+          <span className="text-white/20 text-xs tracking-widest">© 2025 Слава</span>
         </footer>
       </div>
 
       {/* Modals */}
-      <AboutModal 
-        isOpen={activeModal === 'about'} 
-        onClose={() => setActiveModal(null)} 
+      <AboutModal
+        isOpen={activeModal === 'about'}
+        onClose={() => setActiveModal(null)}
       />
-      <ArtistStatementModal 
-        isOpen={activeModal === 'statement'} 
-        onClose={() => setActiveModal(null)} 
+      <ArtistStatementModal
+        isOpen={activeModal === 'statement'}
+        onClose={() => setActiveModal(null)}
       />
-      <EthicsModal 
-        isOpen={activeModal === 'ethics'} 
-        onClose={() => setActiveModal(null)} 
+      <EthicsModal
+        isOpen={activeModal === 'ethics'}
+        onClose={() => setActiveModal(null)}
       />
-      <ParticipateModal 
-        isOpen={activeModal === 'participate'} 
-        onClose={() => setActiveModal(null)} 
+      <ParticipateModal
+        isOpen={activeModal === 'participate'}
+        onClose={() => setActiveModal(null)}
       />
-      <ContactsModal 
-        isOpen={activeModal === 'contacts'} 
-        onClose={() => setActiveModal(null)} 
+      <ContactsModal
+        isOpen={activeModal === 'contacts'}
+        onClose={() => setActiveModal(null)}
       />
     </div>
   );
