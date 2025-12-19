@@ -50,7 +50,11 @@ const AboutModal = ({ isOpen, onClose }: Props) => {
   );
 
   return (
-    <NavModal isOpen={isOpen} onClose={onClose} title={t('nav.about')}>
+    <NavModal 
+      isOpen={isOpen} 
+      onClose={onClose} 
+      title={t('nav.about')}
+    >
       {language === 'ru' ? contentRu : contentEn}
     </NavModal>
   );
