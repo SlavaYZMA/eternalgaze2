@@ -50,7 +50,11 @@ const ArtistStatementModal = ({ isOpen, onClose }: Props) => {
   );
 
   return (
-    <NavModal isOpen={isOpen} onClose={onClose} title={t('nav.statement')}>
+    <NavModal 
+      isOpen={isOpen} 
+      onClose={onClose} 
+      title={t('nav.statement')}
+    >
       {language === 'ru' ? contentRu : contentEn}
     </NavModal>
   );
