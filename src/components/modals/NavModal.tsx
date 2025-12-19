@@ -19,7 +19,7 @@ const NavModal = ({ isOpen, onClose, children, title }: NavModalProps) => {
     >
       <div
         className="bg-black border border-white/10 max-w-2xl w-full max-h-[85vh] overflow-y-auto relative"
-        onClick={e => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
       >
         <div className="sticky top-0 bg-black border-b border-white/10 p-4 md:p-6 flex items-center justify-between">
           <h2 className="text-sm md:text-base tracking-[0.2em] text-white/90 font-bold">
@@ -33,9 +33,7 @@ const NavModal = ({ isOpen, onClose, children, title }: NavModalProps) => {
           </button>
         </div>
 
-        <div className="p-4 md:p-6">
-          {children}
-        </div>
+        <div className="p-4 md:p-6">{children}</div>
       </div>
     </div>
   );
