@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
-import { ArrowLeft, Plus, Minus } from 'lucide-react';
+import { ArrowLeft, Plus, Minus, Copy, Check } from 'lucide-react';
 import { FaceMesh, Results } from '@mediapipe/face_mesh';
 import { Camera as MediaPipeCamera } from '@mediapipe/camera_utils';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -56,7 +56,7 @@ interface EyeData {
 
 const Camera = () => {
   const { t, language } = useLanguage();
-  
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const previewRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -65,7 +65,9 @@ const Camera = () => {
   const chunksRef = useRef<Blob[]>([]);
   const faceMeshRef = useRef<FaceMesh | null>(null);
   const mediaPipeCameraRef = useRef<MediaPipeCamera | null>(null);
-  
+  // Track current preview URL so we can revoke it on retake (FIX: memory leak)
+  const previewUrlRef = useRef<string | null>(null);
+
   // Sliding window for stability
   const detectionWindowRef = useRef<boolean[]>([]);
   const gazeWindowRef = useRef<boolean[]>([]);
@@ -77,16 +79,21 @@ const Camera = () => {
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
   const [deleteUrl, setDeleteUrl] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [saveProgress, setSaveProgress] = useState(0); // FIX: upload progress feedback
   const [zoom, setZoom] = useState(1.5);
   const [supportsHardwareZoom, setSupportsHardwareZoom] = useState(false);
   const [bgState, setBgState] = useState<BackgroundState>('red');
   const [consentAccepted, setConsentAccepted] = useState(false);
   const [showConsent, setShowConsent] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null); // FIX: camera error UI
+  const [copied, setCopied] = useState(false); // FIX: copy button state
 
   const recordIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const stateRef = useRef(state);
   const bgStateRef = useRef(bgState);
+  // FIX: use ref for startRecording to avoid stale closures in onFaceMeshResults
+  const startRecordingRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     stateRef.current = state;
@@ -105,12 +112,12 @@ const Camera = () => {
     const leftOuter = landmarks[LEFT_EYE_OUTER];
     const leftTop = landmarks[LEFT_EYE_TOP];
     const leftBottom = landmarks[LEFT_EYE_BOTTOM];
-    
+
     const leftEyeWidth = Math.abs(leftOuter.x - leftInner.x);
     const leftEyeHeight = Math.abs(leftTop.y - leftBottom.y);
     const leftCenterX = (leftInner.x + leftOuter.x) / 2;
     const leftCenterY = (leftTop.y + leftBottom.y) / 2;
-    
+
     const leftGazeX = Math.abs(leftIris.x - leftCenterX) / leftEyeWidth;
     const leftGazeY = Math.abs(leftIris.y - leftCenterY) / leftEyeHeight;
 
@@ -119,12 +126,12 @@ const Camera = () => {
     const rightOuter = landmarks[RIGHT_EYE_OUTER];
     const rightTop = landmarks[RIGHT_EYE_TOP];
     const rightBottom = landmarks[RIGHT_EYE_BOTTOM];
-    
+
     const rightEyeWidth = Math.abs(rightOuter.x - rightInner.x);
     const rightEyeHeight = Math.abs(rightTop.y - rightBottom.y);
     const rightCenterX = (rightInner.x + rightOuter.x) / 2;
     const rightCenterY = (rightTop.y + rightBottom.y) / 2;
-    
+
     const rightGazeX = Math.abs(rightIris.x - rightCenterX) / rightEyeWidth;
     const rightGazeY = Math.abs(rightIris.y - rightCenterY) / rightEyeHeight;
 
@@ -160,11 +167,11 @@ const Camera = () => {
     const rightBounds = getEyeBounds(RIGHT_EYE_INDICES);
 
     const margin = CONFIG.FRAME_MARGIN;
-    const leftInFrame = 
-      leftBounds.minX > margin && leftBounds.maxX < (1 - margin) && 
+    const leftInFrame =
+      leftBounds.minX > margin && leftBounds.maxX < (1 - margin) &&
       leftBounds.minY > margin && leftBounds.maxY < (1 - margin);
-    const rightInFrame = 
-      rightBounds.minX > margin && rightBounds.maxX < (1 - margin) && 
+    const rightInFrame =
+      rightBounds.minX > margin && rightBounds.maxX < (1 - margin) &&
       rightBounds.minY > margin && rightBounds.maxY < (1 - margin);
 
     const avgEyeWidth = (leftBounds.width + rightBounds.width) / 2;
@@ -203,10 +210,13 @@ const Camera = () => {
         detectionWindowRef.current = [];
         gazeWindowRef.current = [];
         setBgState('red');
-        
-        if (currentState === 'recording' && recorderRef.current?.state === 'recording') {
-          recorderRef.current.pause();
-          setIsRecording(false);
+
+        // FIX: pause regardless of state (recording or paused)
+        if (currentState === 'recording' && recorderRef.current && recorderRef.current.state !== 'inactive') {
+          if (recorderRef.current.state === 'recording') {
+            recorderRef.current.pause();
+            setIsRecording(false);
+          }
         }
       }
       return;
@@ -237,12 +247,12 @@ const Camera = () => {
     } else {
       newBgState = 'green';
     }
-    
+
     setBgState(newBgState);
 
-    // Auto recording logic
+    // FIX: use startRecordingRef to avoid stale closure
     if (currentState === 'idle' && newBgState === 'green') {
-      startRecording();
+      startRecordingRef.current?.();
     } else if (currentState === 'recording') {
       if (newBgState === 'green') {
         if (recorderRef.current?.state === 'paused') {
@@ -269,6 +279,7 @@ const Camera = () => {
 
     const initCamera = async () => {
       try {
+        setCameraError(null);
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
           audio: false
@@ -316,8 +327,29 @@ const Camera = () => {
           mpCamera.start();
           mediaPipeCameraRef.current = mpCamera;
         }
-      } catch (err) {
+      } catch (err: unknown) {
+        // FIX: show meaningful camera error to user instead of silent console.error
         console.error('Camera error:', err);
+        const error = err as { name?: string; message?: string };
+        if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+          setCameraError(
+            language === 'ru'
+              ? 'Нет доступа к камере. Разрешите доступ в настройках браузера и перезагрузите страницу.'
+              : 'Camera access denied. Please allow camera access in your browser settings and reload the page.'
+          );
+        } else if (error.name === 'NotFoundError') {
+          setCameraError(
+            language === 'ru'
+              ? 'Камера не найдена. Подключите камеру и перезагрузите страницу.'
+              : 'No camera found. Please connect a camera and reload the page.'
+          );
+        } else {
+          setCameraError(
+            language === 'ru'
+              ? 'Не удалось открыть камеру. Перезагрузите страницу и попробуйте снова.'
+              : 'Could not open camera. Please reload the page and try again.'
+          );
+        }
       }
     };
 
@@ -332,6 +364,7 @@ const Camera = () => {
       }
       if (recordIntervalRef.current) clearInterval(recordIntervalRef.current);
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state === 'identity']);
 
   useEffect(() => {
@@ -344,7 +377,7 @@ const Camera = () => {
 
   const startRecording = useCallback(() => {
     if (stateRef.current !== 'idle') return;
-    
+
     setState('recording');
     setRecordTime(CONFIG.RECORD_SECONDS);
     chunksRef.current = [];
@@ -405,14 +438,20 @@ const Camera = () => {
 
     recorder.onstop = () => {
       isActive = false;
-      
+
       if (chunksRef.current.length > 0) {
         const blob = new Blob(chunksRef.current, { type: mimeType });
         setRecordedBlob(blob);
         setState('preview');
 
         if (previewRef.current) {
-          previewRef.current.src = URL.createObjectURL(blob);
+          // FIX: revoke previous preview URL before creating new one
+          if (previewUrlRef.current) {
+            URL.revokeObjectURL(previewUrlRef.current);
+          }
+          const url = URL.createObjectURL(blob);
+          previewUrlRef.current = url;
+          previewRef.current.src = url;
           previewRef.current.play().catch(() => {});
         }
       }
@@ -422,7 +461,7 @@ const Camera = () => {
 
     let count = CONFIG.RECORD_SECONDS;
     let lastSecond = Date.now();
-    
+
     recordIntervalRef.current = setInterval(() => {
       // Only count down when actively recording (green state)
       if (bgStateRef.current === 'green' && recorderRef.current?.state === 'recording') {
@@ -434,14 +473,20 @@ const Camera = () => {
           if (count <= 0) {
             if (recordIntervalRef.current) clearInterval(recordIntervalRef.current);
             recordIntervalRef.current = null;
-            if (recorder.state === 'recording') {
-              recorder.stop();
+            // FIX: stop recorder regardless of state (recording OR paused)
+            if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+              recorderRef.current.stop();
             }
           }
         }
       }
     }, 100);
   }, [zoom, supportsHardwareZoom]);
+
+  // FIX: keep startRecordingRef always up to date so onFaceMeshResults never has a stale closure
+  useEffect(() => {
+    startRecordingRef.current = startRecording;
+  }, [startRecording]);
 
   const resetRecording = () => {
     setState('idle');
@@ -453,73 +498,108 @@ const Camera = () => {
     gazeWindowRef.current = [];
     setBgState('red');
     setIsRecording(false);
+    setSaveProgress(0);
+    setCopied(false);
+
+    // FIX: revoke blob URL to free memory
     if (previewRef.current) {
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+        previewUrlRef.current = null;
+      }
       previewRef.current.src = '';
     }
   };
 
   const saveForever = async () => {
-  if (!recordedBlob || !consentAccepted) return;
+    if (!recordedBlob || !consentAccepted) return;
 
-  setIsSaving(true);
+    setIsSaving(true);
+    setSaveProgress(10);
 
-  try {
-    // 1. Генерируем уникальное имя файла
-    const fileId = crypto.randomUUID();
-    const fileName = `eyes-${Date.now()}-${fileId.slice(0, 8)}.webm`;
+    try {
+      // 1. Generate unique filename
+      const fileId = crypto.randomUUID();
+      const fileName = `eyes-${Date.now()}-${fileId.slice(0, 8)}.webm`;
 
-    // 2. Прямая загрузка в Storage
-    const { error: uploadError } = await supabase.storage
-      .from('eyes')
-      .upload(fileName, recordedBlob, {
-        contentType: 'video/webm',
-        upsert: false,
-      });
+      setSaveProgress(20);
 
-    if (uploadError) throw uploadError;
+      // 2. Upload to Storage
+      const { error: uploadError } = await supabase.storage
+        .from('eyes')
+        .upload(fileName, recordedBlob, {
+          contentType: 'video/webm',
+          upsert: false,
+        });
 
-    // 3. Добавляем запись в таблицу eyes (чтобы Canvas увидел)
-    const { error: eyesError } = await supabase
-      .from('eyes')
-      .insert({ cid: fileName });
+      if (uploadError) throw uploadError;
 
-    if (eyesError) {
-      console.warn('Не удалось добавить в таблицу eyes, но видео загружено:', eyesError);
-      // Не прерываем — главное, что видео в storage
+      setSaveProgress(60);
+
+      // 3. Insert record into eyes table
+      const { error: eyesError } = await supabase
+        .from('eyes')
+        .insert({ cid: fileName });
+
+      if (eyesError) {
+        console.warn('Could not insert into eyes table, but video uploaded:', eyesError);
+      }
+
+      setSaveProgress(80);
+
+      // 4. Generate unique one-time delete token
+      const deleteToken = crypto.randomUUID();
+
+      const { error: tokenError } = await supabase
+        .from('delete_tokens')
+        .insert({
+          cid: fileName,
+          delete_token: deleteToken,
+        });
+
+      if (tokenError) {
+        console.warn('Could not create delete token:', tokenError);
+      }
+
+      setSaveProgress(100);
+
+      // 5. Build delete link
+      const siteUrl = window.location.origin;
+      const generatedDeleteUrl = `${siteUrl}/delete?token=${deleteToken}`;
+      setDeleteUrl(generatedDeleteUrl);
+
+    } catch (err: unknown) {
+      console.error('Save error:', err);
+      const error = err as { message?: string };
+      alert(
+        (language === 'ru' ? 'Ошибка сохранения: ' : 'Save error: ') +
+        (error.message || 'Unknown error')
+      );
+    } finally {
+      setIsSaving(false);
+      setSaveProgress(0);
     }
+  };
 
-    // 4. Генерируем уникальный одноразовый токен для удаления
-    const deleteToken = crypto.randomUUID();
-
-    const { error: tokenError } = await supabase
-      .from('delete_tokens')
-      .insert({
-        cid: fileName,
-        delete_token: deleteToken,
-      });
-
-    if (tokenError) {
-      console.warn('Не удалось создать токен удаления:', tokenError);
-      // Продолжаем — пользователь всё равно увидит видео
+  // FIX: copy delete link to clipboard
+  const copyDeleteUrl = async () => {
+    if (!deleteUrl) return;
+    try {
+      await navigator.clipboard.writeText(deleteUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback for older browsers
+      const el = document.createElement('textarea');
+      el.value = deleteUrl;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
     }
-
-    // 5. Формируем ссылку для удаления
-    const siteUrl = window.location.origin; // например https://vechnoe.netlify.app
-    const deleteUrl = `${siteUrl}/delete?token=${deleteToken}`;
-
-    // 6. Показываем пользователю ссылку
-    setDeleteUrl(deleteUrl);
-
-    // Опционально: сброс формы или переход на canvas
-    // resetRecording(); // если хочешь сбросить камеру сразу
-
-  } catch (err: any) {
-    console.error('Save error:', err);
-    alert('Ошибка сохранения: ' + err.message);
-  } finally {
-    setIsSaving(false);
-  }
-};
+  };
 
   const downloadVideo = () => {
     if (!recordedBlob) return;
@@ -560,7 +640,7 @@ const Camera = () => {
               <div className="w-8 h-8 border border-white/40 rounded-full" />
             </div>
           </div>
-          
+
           <p className="text-white/70 text-sm leading-relaxed mb-8">
             {t('camera.identity')}
           </p>
@@ -572,9 +652,35 @@ const Camera = () => {
             {t('camera.confirm')}
           </button>
 
-          <Link 
-            to="/" 
+          <Link
+            to="/"
             className="block mt-8 text-white/30 text-xs hover:text-white/60 transition-colors"
+          >
+            ← {language === 'ru' ? 'Назад' : 'Back'}
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // FIX: camera error screen
+  if (cameraError) {
+    return (
+      <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center px-6 font-mono">
+        <div className="max-w-lg text-center">
+          <div className="w-16 h-16 border-2 border-red-500/30 rounded-full flex items-center justify-center mx-auto mb-6">
+            <div className="w-8 h-8 border border-red-500/50 rounded-full" />
+          </div>
+          <p className="text-red-400/80 text-sm leading-relaxed mb-8">{cameraError}</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="px-10 py-3 border border-white/30 text-white/60 text-sm uppercase tracking-widest hover:bg-white/10 transition-colors"
+          >
+            {language === 'ru' ? 'Перезагрузить' : 'Reload'}
+          </button>
+          <Link
+            to="/"
+            className="block mt-6 text-white/30 text-xs hover:text-white/60 transition-colors"
           >
             ← {language === 'ru' ? 'Назад' : 'Back'}
           </Link>
@@ -593,7 +699,7 @@ const Camera = () => {
       {state !== 'preview' && (
         <div className="absolute top-6 left-1/2 -translate-x-1/2 z-50 text-center px-4">
           <p className="text-white/60 text-xs md:text-sm tracking-wide max-w-md">
-            {bgState === 'orange' 
+            {bgState === 'orange'
               ? t('camera.lookAtCamera')
               : t('camera.instruction')
             }
@@ -615,17 +721,17 @@ const Camera = () => {
 
       {/* Main content */}
       <div className="flex-1 flex flex-col items-center justify-center px-4 w-full max-w-2xl pt-20">
-        
+
         {/* Video frame */}
         <div className="relative mb-8">
-          <div 
+          <div
             className={`relative overflow-hidden rounded-xl transition-shadow duration-300 ${
               state === 'recording' && bgState === 'green' ? 'animate-pulse' : ''
             }`}
             style={{
               width: CONFIG.FRAME_WIDTH,
               height: CONFIG.FRAME_HEIGHT,
-              boxShadow: state === 'preview' 
+              boxShadow: state === 'preview'
                 ? 'inset 0 0 0 2px rgba(255,255,255,0.3)'
                 : bgState === 'green'
                   ? 'inset 0 0 0 3px rgba(34, 197, 94, 0.6)'
@@ -657,28 +763,28 @@ const Camera = () => {
               <div className="absolute inset-0 pointer-events-none">
                 <div className="absolute top-1/2 left-0 right-0 h-px bg-white/10" />
                 <div className="absolute left-1/2 top-0 bottom-0 w-px bg-white/10" />
-                
-                <div 
+
+                <div
                   className="absolute top-1/2 -translate-y-1/2 left-[15%] w-[30%] h-[60%] border border-dashed rounded-full transition-colors duration-300"
-                  style={{ 
-                    borderColor: bgState === 'green' 
-                      ? 'rgba(34, 197, 94, 0.4)' 
+                  style={{
+                    borderColor: bgState === 'green'
+                      ? 'rgba(34, 197, 94, 0.4)'
                       : bgState === 'orange'
                         ? 'rgba(249, 115, 22, 0.3)'
                         : 'rgba(239, 68, 68, 0.3)'
                   }}
                 />
-                <div 
+                <div
                   className="absolute top-1/2 -translate-y-1/2 right-[15%] w-[30%] h-[60%] border border-dashed rounded-full transition-colors duration-300"
-                  style={{ 
-                    borderColor: bgState === 'green' 
-                      ? 'rgba(34, 197, 94, 0.4)' 
+                  style={{
+                    borderColor: bgState === 'green'
+                      ? 'rgba(34, 197, 94, 0.4)'
                       : bgState === 'orange'
                         ? 'rgba(249, 115, 22, 0.3)'
                         : 'rgba(239, 68, 68, 0.3)'
                   }}
                 />
-                
+
                 <div className="absolute top-2 left-2 w-3 h-3 border-l border-t border-white/30" />
                 <div className="absolute top-2 right-2 w-3 h-3 border-r border-t border-white/30" />
                 <div className="absolute bottom-2 left-2 w-3 h-3 border-l border-b border-white/30" />
@@ -733,7 +839,7 @@ const Camera = () => {
                 />
                 <label htmlFor="consent-save" className="text-white/60 text-xs cursor-pointer">
                   {t('camera.consent')}
-                  <button 
+                  <button
                     onClick={() => setShowConsent(true)}
                     className="block text-white/40 underline hover:text-white/60 transition-colors mt-1"
                   >
@@ -746,10 +852,23 @@ const Camera = () => {
             <button
               onClick={saveForever}
               disabled={isSaving || !consentAccepted}
-              className="w-full px-8 py-4 bg-white text-black text-sm font-bold uppercase tracking-widest hover:bg-white/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full px-8 py-4 bg-white text-black text-sm font-bold uppercase tracking-widest hover:bg-white/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed relative overflow-hidden"
             >
-              {t('camera.save')}
+              {/* FIX: progress bar inside save button */}
+              {isSaving && saveProgress > 0 && (
+                <div
+                  className="absolute left-0 top-0 bottom-0 bg-black/10 transition-all duration-300"
+                  style={{ width: `${saveProgress}%` }}
+                />
+              )}
+              <span className="relative">
+                {isSaving
+                  ? (language === 'ru' ? `СОХРАНЕНИЕ... ${saveProgress}%` : `SAVING... ${saveProgress}%`)
+                  : t('camera.save')
+                }
+              </span>
             </button>
+
             <button
               onClick={resetRecording}
               disabled={isSaving}
@@ -778,11 +897,35 @@ const Camera = () => {
           <div className="text-center max-w-sm">
             <div className="text-green-500 mb-4 text-2xl">✓</div>
             <p className="text-white/60 text-xs mb-2">{t('camera.deleteLink')}</p>
-            <code className="block bg-white/5 p-3 text-xs break-all text-white/60 mb-6">
-              {deleteUrl}
-            </code>
-            <Link 
-              to="/canvas" 
+
+            {/* FIX: copy button for delete link */}
+            <div className="relative bg-white/5 p-3 mb-2 text-left">
+              <code className="block text-xs break-all text-white/60 pr-8">
+                {deleteUrl}
+              </code>
+              <button
+                onClick={copyDeleteUrl}
+                className="absolute top-2 right-2 p-1 text-white/30 hover:text-white/70 transition-colors"
+                title={language === 'ru' ? 'Скопировать' : 'Copy'}
+              >
+                {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+              </button>
+            </div>
+
+            {copied && (
+              <p className="text-green-400/70 text-xs mb-4">
+                {language === 'ru' ? 'Скопировано!' : 'Copied!'}
+              </p>
+            )}
+
+            <p className="text-white/30 text-xs mb-6">
+              {language === 'ru'
+                ? 'Сохраните эту ссылку — она показывается только один раз.'
+                : 'Save this link — it is shown only once.'}
+            </p>
+
+            <Link
+              to="/canvas"
               className="inline-block px-8 py-3 bg-white text-black text-sm font-bold uppercase tracking-widest hover:bg-white/90 transition-colors"
             >
               {t('camera.viewCanvas')}
@@ -793,7 +936,7 @@ const Camera = () => {
 
       {/* Hidden canvas for recording */}
       <canvas ref={canvasRef} className="hidden" />
-      
+
       {/* Consent modal */}
       <ConsentModal isOpen={showConsent} onClose={() => setShowConsent(false)} />
     </div>
